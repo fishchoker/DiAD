@@ -43,10 +43,21 @@ train_dataset, test_dataset = MVTecDataset('train',data_path), MVTecDataset('tes
 # 如需使用 VisA 数据集，可取消下面一行的注释
 # train_dataset, test_dataset = VisaDataset('train',data_path), VisaDataset('test',data_path)
 
+# 使用小规模训练看看
+# ===== small dataset debug =====
+train_dataset.data = train_dataset.data[:100]
+test_dataset.data = test_dataset.data[:20]
+
 # 创建 PyTorch 数据加载器（DataLoader）
 # num_workers=8 表示使用 8 个子进程并行加载数据
 train_dataloader = DataLoader(train_dataset, num_workers=8, batch_size=batch_size, shuffle=True)
 test_dataloader = DataLoader(test_dataset, num_workers=8, batch_size=1, shuffle=True)
+
+# 测试正常文本是否正确添加
+# ===== DEBUG batch =====
+for batch in train_dataloader:
+    print("Batch text example:", batch["txt"][:4])
+    break
 
 # 训练回调设置
 # 保存验证集上准确率（val_acc）最高的模型权重到 ./val_ckpt/ 目录
@@ -60,7 +71,17 @@ logger = ImageLogger(batch_frequency=logger_freq)
 # callbacks: 包含图像记录和模型检查点保存
 # accumulate_grad_batches=4: 梯度累加，每 4 个 batch 更新一次参数，相当于增大了 4 倍 batch size
 # check_val_every_n_epoch=25: 每隔 25 个 epoch 进行一次验证集评估
-trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=25)
-
+# trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=25)
+# 测试用的小规模trainer
+trainer = pl.Trainer(
+    gpus=1,
+    precision=32,
+    callbacks=[logger, ckpt_callback_val_loss],
+    accumulate_grad_batches=1,
+    max_epochs=2,
+    limit_train_batches=50,
+    limit_val_batches=10,
+    check_val_every_n_epoch=1
+)
 # 开始执行训练流程
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)

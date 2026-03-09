@@ -25,6 +25,22 @@ class VisaDataset(Dataset):
         self.image_size = (256,256)
         self.root = root
 
+        # 各个类别对应的正常描述，用于 CLIP 文本编码
+        self.class_prompts = {
+            'candle': 'a photo of a normal candle without defect',
+            'capsules': 'a photo of normal capsules without defect',
+            'cashew': 'a photo of normal cashew nuts without defect',
+            'chewinggum': 'a photo of normal chewing gum without defect',
+            'fryum': 'a photo of normal fryum without defect',
+            'macaroni1': 'a photo of normal macaroni without defect',
+            'macaroni2': 'a photo of normal macaroni without defect',
+            'pcb1': 'a photo of a normal printed circuit board without defect',
+            'pcb2': 'a photo of a normal printed circuit board without defect',
+            'pcb3': 'a photo of a normal printed circuit board without defect',
+            'pcb4': 'a photo of a normal printed circuit board without defect',
+            'pipe_fryum': 'a photo of normal pipe fryum without defect'
+        }
+
     def __len__(self):
         return len(self.data)
 
@@ -33,7 +49,10 @@ class VisaDataset(Dataset):
 
         source_filename = item['image']
         target_filename = item['image']
-        prompt = ""
+        
+        # 获取对应类别的正常文本描述作为提示词 (Prompt)
+        prompt = self.class_prompts[item["object"]]
+        
         if item.get("mask", None):
             mask = cv2.imread( self.root + item['mask'], cv2.IMREAD_GRAYSCALE)
         else:

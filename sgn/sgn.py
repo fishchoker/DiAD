@@ -2,41 +2,51 @@ import einops
 import torch
 import torch as th
 import torch.nn as nn
-
+# diffusion 工具
 from ldm.modules.diffusionmodules.util import (
     conv_nd,
     linear,
     zero_module,
     timestep_embedding,
 )
-
+# 用于维度重排的einops
 from einops import rearrange, repeat
 from torchvision.utils import make_grid
 from ldm.modules.attention import SpatialTransformer
 from ldm.modules.diffusionmodules.openaimodel import UNetModel, TimestepEmbedSequential, ResBlock, Downsample, AttentionBlock, Upsample
+# SD核心类
 from ldm.models.diffusion.ddpm import LatentDiffusion
 from ldm.util import log_txt_as_img, exists, instantiate_from_config
+# DDIM 用于推理采样
 from ldm.models.diffusion.ddim import DDIMSampler
 import torchvision
-
+# 控制扩散时间步权重（没有被使用？
 def custom_sigmoid(x):
     return 1 / (1 + torch.exp(-(x - 600) / 10))
-
+# 受控Unet
 class ControlledUnetModel(UNetModel):
+    # 前向扩散 噪声latent 扩散时间 CLIP文本embedding 控制信号
     def forward(self, x, timesteps=None, context=None, control=None, only_mid_control=False, **kwargs):
         hs = []
         with torch.no_grad():
+            # 扩散时间步 embedding
+            # timestep → sinusoidal embedding → MLP → emb
             t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
             emb = self.time_embed(t_emb)
+            # Unet 编码器
+            # 每层h = ResBlock + Attention + Downsample
             h = x.type(self.dtype)
             for module in self.input_blocks:
                 h = module(h, emb, context)
                 hs.append(h)
+            # 瓶颈层
             h = self.middle_block(h, emb, context)
-
+            
+        # 加入 ControlNet 中间特征
         if control is not None:
             h += control.pop()
 
+        # 解码器
         for i, module in enumerate(self.output_blocks):
             if only_mid_control or control is None:
                 if i < 3:
@@ -381,6 +391,14 @@ class DiAD(LatentDiffusion):
         control = control.to(self.device)
         # control = einops.rearrange(control, 'b h w c -> b c h w')
         control = control.to(memory_format=torch.contiguous_format).float()
+        # 返回值对应 ControlNet 的标准输入结构
+        # x  → diffusion input (latent) 输入图像经过VAE得到的潜表示
+        # cond = {
+        #     c_crossattn : text condition
+        #     c_concat    : controlnet condition
+        # }
+        # 测试clip是否正常
+        print("CLIP embedding:", c.shape)
         return x, dict(c_crossattn=[c], c_concat=[control])
 
     def apply_model(self, x_noisy, t, cond, *args, **kwargs):

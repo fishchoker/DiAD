@@ -1,18 +1,18 @@
 model:
   target: sgn.sgn.DiAD
   params:
-    linear_start: 0.00085
-    linear_end: 0.0120
+    linear_start: 0.00085 # 扩散模型的起始噪声水平
+    linear_end: 0.0120  # 噪声计划
     num_timesteps_cond: 1
     log_every_t: 200
-    timesteps: 1000
-    first_stage_key: "jpg"
-    cond_stage_key: "txt"
+    timesteps: 1000 # 扩散步数
+    first_stage_key: "jpg"  # 输入图像的键名
+    cond_stage_key: "txt" # 输入文本的键名 通过这个键将我的文本传给模型
     control_key: "hint"
     image_size: 64
     channels: 4
     cond_stage_trainable: false
-    conditioning_key: crossattn
+    conditioning_key: crossattn # 包含交叉注意力
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
     use_ema: False
