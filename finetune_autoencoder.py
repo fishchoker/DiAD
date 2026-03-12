@@ -9,7 +9,7 @@ import torchvision
 from PIL import Image
 from mvtecad_dataloader import MVTecDataset
 from pytorch_lightning.callbacks import Callback
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from pytorch_lightning.utilities import rank_zero_only
 import cv2
 from visa_dataloader import VisaDataset
 
@@ -79,7 +79,7 @@ class ImageLogger(Callback):
     def check_frequency(self, check_idx):
         return check_idx % self.batch_freq == 0
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         if trainer.current_epoch % trainer.check_val_every_n_epoch ==0:
             if not self.disabled:
                 self.log_img(pl_module, batch, batch_idx, split="train")
@@ -124,7 +124,7 @@ model.learning_rate = batch_size * learning_rate
 train_dataset = MVTecDataset('train', data_path)
 train_dataloader = DataLoader(train_dataset, num_workers=8, batch_size=batch_size, shuffle=True)
 logger = ImageLogger(batch_frequency=logger_freq)
-trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger],  accumulate_grad_batches=8)
+trainer = pl.Trainer(accelerator="gpu", devices=1, precision=32, callbacks=[logger],  accumulate_grad_batches=8)
 
 # Train!
 trainer.fit(model, train_dataloaders=train_dataloader)

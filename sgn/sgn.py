@@ -398,7 +398,7 @@ class DiAD(LatentDiffusion):
         #     c_concat    : controlnet condition
         # }
         # 测试clip是否正常
-        print("CLIP embedding:", c.shape)
+        # print("CLIP embedding:", c.shape)
         return x, dict(c_crossattn=[c], c_concat=[control])
 
     def apply_model(self, x_noisy, t, cond, *args, **kwargs):
@@ -494,6 +494,9 @@ class DiAD(LatentDiffusion):
         params = list(self.control_model.parameters())
         params += list(self.model.diffusion_model.output_blocks.parameters())
         params += list(self.model.diffusion_model.out.parameters())
+        
+        # 使用 foreach=False 减少 optimizer step 时的峰值显存占用
+        # 虽然速度慢一点点，但可以避免创建巨大的临时 buffer 导致 OOM
         opt = torch.optim.AdamW(params, lr=lr)
         return opt
 

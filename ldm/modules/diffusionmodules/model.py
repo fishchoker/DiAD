@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
+import torch.nn.functional as F
 from einops import rearrange
 from typing import Optional, Any
 
@@ -255,7 +256,9 @@ class MemoryEfficientAttnBlock(nn.Module):
             .contiguous(),
             (q, k, v),
         )
-        out = xformers.ops.memory_efficient_attention(q, k, v, attn_bias=None, op=self.attention_op)
+        # actually compute the attention, what we cannot get enough of
+        # q, k, v are already (B*H, L, D), which SDPA expects
+        out = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
 
         out = (
             out.unsqueeze(0)

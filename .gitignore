@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Conda / virtual env
+env/
+venv/
+*.env
+*.yml
+*.yaml
+
+# PyTorch / Lightning
+*.pt
+*.pth
+*.ckpt
+lightning_logs/
+val_ckpt/
+
+# Logs / Results
+log/
+log_image/
+image_log/
+npz_result/
+samples/
+*.npz
+*.h5
+
+# IDE / Editor
+.idea/
+*.iml
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db

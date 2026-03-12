@@ -5,6 +5,7 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
+from tqdm import tqdm
 
 # MVTec 数据集通用的 ImageNet 均值和标准差，用于归一化
 mean_train = [0.485, 0.456, 0.406]
@@ -41,11 +42,12 @@ class MVTecDataset(Dataset):
     """
     MVTec-AD 数据集加载类
     """
-    def __init__(self, type, root):
+    def __init__(self, type, root, load_to_ram=False):
         """
         初始化数据集
         :param type: 'train' 加载训练集，否则加载测试集
         :param root: 数据集的根目录路径
+        :param load_to_ram: 是否预加载整个数据集到内存中
         """
         self.data = []
         # 从 JSON 文件加载数据索引信息
@@ -84,17 +86,24 @@ class MVTecDataset(Dataset):
             'zipper': 'a photo of a normal zipper without defect'
         }
 
+        # 加载到内存逻辑
+        self.load_to_ram = load_to_ram
+        self.samples = []
+        if self.load_to_ram:
+            print(f"Loading {type} dataset to RAM (Total: {len(self.data)} samples)...")
+            for i in tqdm(range(len(self.data))):
+                self.samples.append(self.get_sample(i))
+            print(f"Successfully preloaded {type} dataset.")
+
     def __len__(self):
         """
         返回数据集样本总数
         """
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def get_sample(self, idx):
         """
-        根据索引获取单个样本
-        :param idx: 样本索引
-        :return: 包含图像、掩码、提示词、文件名、类别名、标签的字典
+        内部方法：从磁盘读取并处理单个样本
         """
         item = self.data[idx]
         source_filename = item['filename'] # 源文件名
@@ -148,14 +157,21 @@ class MVTecDataset(Dataset):
         clsname = item["clsname"] # 获取类别名称
         image_idx = self.label_to_idx[clsname] # 获取类别索引
 
-        # 返回符合 DiAD 训练架构的字典格式
-        return dict(
-            jpg=target,         # 重建目标图
-            txt=prompt,         # 文本提示（修改后应为正常语义先验
-            hint=source,        # 条件控制图（原图）
-            mask=mask,          # 异常区域掩码
-            filename=source_filename, 
-            clsname=clsname, 
-            label=int(image_idx) # 类别索引（用于多类别模型控制）
-        )
+        return {
+            'jpg': source, 
+            'txt': prompt, 
+            'hint': target, 
+            'mask': mask, 
+            'clsname': clsname, 
+            'image_idx': image_idx, 
+            'filename': source_filename, 
+            'label': label
+        }
 
+    def __getitem__(self, idx):
+        """
+        根据索引获取单个样本
+        """
+        if self.load_to_ram:
+            return self.samples[idx]
+        return self.get_sample(idx)
