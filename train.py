@@ -117,7 +117,8 @@ ckpt_callback_val_loss = ModelCheckpoint(monitor='val_acc', dirpath='./val_ckpt/
 # 初始化自定义的图像日志记录器
 logger = ImageLogger(batch_frequency=500)
 # 初始化 TensorBoard 日志记录器
-tb_logger = TensorBoardLogger(save_dir="lightning_logs/", name="diad_mvtec")
+# name="" 确保日志直接保存为 lightning_logs/version_x
+tb_logger = TensorBoardLogger(save_dir="lightning_logs/", name="")
 
 # 初始化 PyTorch Lightning 训练器（Trainer）
 # accelerator="gpu", devices=1: 使用单 GPU 模式
@@ -134,18 +135,30 @@ tb_logger = TensorBoardLogger(save_dir="lightning_logs/", name="diad_mvtec")
 #     max_epochs=150, 
 #     check_val_every_n_epoch=10
 # )
+# trainer = pl.Trainer(
+#         accelerator="gpu",
+#         devices=1, 
+#         precision="bf16-mixed", 
+#         logger=tb_logger,
+#         callbacks=[logger, ckpt_callback_val_loss], 
+#         accumulate_grad_batches=1, 
+#         max_epochs=200, 
+#         check_val_every_n_epoch=10,
+#         enable_progress_bar=True,
+#         log_every_n_steps=50
+#     )
 trainer = pl.Trainer(
-        accelerator="gpu",
-        devices=1, 
-        precision="bf16-mixed", 
-        logger=tb_logger,
-        callbacks=[logger, ckpt_callback_val_loss], 
-        accumulate_grad_batches=1, 
-        max_epochs=200, 
-        check_val_every_n_epoch=10,
-        enable_progress_bar=True,
-        log_every_n_steps=50
-    )
+    accelerator="gpu",
+    devices=1, 
+    precision="bf16-mixed", 
+    logger=tb_logger,
+    callbacks=[logger, ckpt_callback_val_loss], 
+    accumulate_grad_batches=1, 
+    max_epochs=200, 
+    check_val_every_n_epoch=10,
+    enable_progress_bar=True,
+    log_every_n_steps=50
+)
 # trainer = pl.Trainer(
 #         accelerator="gpu",
 #         devices=1, 

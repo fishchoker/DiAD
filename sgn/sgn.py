@@ -382,6 +382,8 @@ class DiAD(LatentDiffusion):
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
         
+        # [注释] 预计算与缓存逻辑 (已根据基线要求禁用，但代码保留供参考)
+        """
         # 系统权威物理类别清单 (必须与 MVTecDataset.CLASS_NAMES 保持一致)
         self.CLASS_NAMES = [
             'bottle', 'cable', 'capsule', 'carpet', 'grid', 'hazelnut', 'leather', 'metal_nut',
@@ -471,45 +473,44 @@ class DiAD(LatentDiffusion):
         self.class_prompts_list = [raw_prompts[name] for name in self.CLASS_NAMES]
         
         # 注册一个空 buffer 用于存储预计算的 Embedding
-        # persistent=False 确保它不会保存在 checkpoint 中，每次启动都会根据代码中的提示词重新计算
         self.register_buffer("prompt_cache", torch.tensor([]), persistent=False)
+        """
 
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
+        # [恢复基线] 直接从 batch 中获取文本并实时编码，不再使用缓存和 Ensemble
+        x, c = super().get_input(batch, self.first_stage_key, *args, **kwargs)
+
+        # [注释] 优化后的缓存索引逻辑 (保留供参考)
+        """
         # 首次运行时预计算缓存 (检查 buffer 是否为空)
         if self.prompt_cache.numel() == 0:
             print("Pre-calculating and caching prompt ensemble embeddings...")
             all_embeddings = []
             for class_group in self.class_prompts_list:
-                # class_group 是一个 List[str], FrozenCLIPEmbedder 期望 List[str] 作为 batch 输入
                 c_group = self.get_learned_conditioning(class_group)
-                # 计算平均值 (1, L, D)
                 c_mean = c_group.mean(dim=0, keepdim=True)
                 all_embeddings.append(c_mean)
-            
-            # 直接更新 buffer 的数据
             self.prompt_cache = torch.cat(all_embeddings, dim=0)
             print(f"Cached embeddings for {len(self.class_prompts_list)} classes.")
 
-        # 处理嵌套列表问题：super().get_input 会尝试编码 batch[self.cond_stage_key]
-        # 如果 batch['txt'] 是 [['s1','s2','s3'], ...] 这种嵌套列表，CLIP Tokenizer 会报错
+        # 处理嵌套列表问题
         original_txt = batch.get(self.cond_stage_key, None)
         if isinstance(original_txt, (list, tuple)) and len(original_txt) > 0 and isinstance(original_txt[0], (list, tuple)):
-            # 暂时替换为扁平列表以绕过 super().get_input 中的编码报错
             batch[self.cond_stage_key] = [t[0] for t in original_txt]
             x, _ = super().get_input(batch, self.first_stage_key, *args, **kwargs)
-            batch[self.cond_stage_key] = original_txt # 还原原始数据
+            batch[self.cond_stage_key] = original_txt 
         else:
             x, _ = super().get_input(batch, self.first_stage_key, *args, **kwargs)
         
-        # 从缓存中根据 image_idx 获取对应的平均 Embedding
         image_idxs = batch['image_idx']
         if isinstance(image_idxs, list):
             image_idxs = torch.tensor([int(i) for i in image_idxs], device=self.device)
         elif isinstance(image_idxs, torch.Tensor):
             image_idxs = image_idxs.to(self.device).long()
             
-        c = self.prompt_cache[image_idxs] # (B, L, D)
+        c = self.prompt_cache[image_idxs] 
+        """
 
         control = batch[self.control_key]
         if bs is not None:

@@ -109,13 +109,14 @@ class AutoencoderKL(pl.LightningModule):
     def training_step(self, batch, batch_idx, optimizer_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
+        batch_size = inputs.shape[0]
 
         if optimizer_idx == 0:
             # train encoder+decoder+logvar
             aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, optimizer_idx, self.global_step,
                                             last_layer=self.get_last_layer(), split="train")
-            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, batch_size=batch_size)
+            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False, batch_size=batch_size)
             return aeloss
 
         if optimizer_idx == 1:
@@ -123,8 +124,8 @@ class AutoencoderKL(pl.LightningModule):
             discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, optimizer_idx, self.global_step,
                                                 last_layer=self.get_last_layer(), split="train")
 
-            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True, batch_size=batch_size)
+            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False, batch_size=batch_size)
             return discloss
 
     def validation_step(self, batch, batch_idx):
@@ -136,15 +137,16 @@ class AutoencoderKL(pl.LightningModule):
     def _validation_step(self, batch, batch_idx, postfix=""):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
+        batch_size = inputs.shape[0]
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="val"+postfix)
 
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="val"+postfix)
 
-        self.log(f"val{postfix}/rec_loss", log_dict_ae[f"val{postfix}/rec_loss"])
-        self.log_dict(log_dict_ae)
-        self.log_dict(log_dict_disc)
+        self.log(f"val{postfix}/rec_loss", log_dict_ae[f"val{postfix}/rec_loss"], batch_size=batch_size)
+        self.log_dict(log_dict_ae, batch_size=batch_size)
+        self.log_dict(log_dict_disc, batch_size=batch_size)
         return self.log_dict
 
     def configure_optimizers(self):
