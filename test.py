@@ -31,6 +31,8 @@ args = parser.parse_args()
 
 # Configs
 resume_path = args.resume_path
+# 提取模型文件名（不含扩展名）作为子目录名称
+model_name = os.path.basename(resume_path).split('.')[0]
 
 batch_size = 1
 logger_freq = 300
@@ -46,7 +48,8 @@ model.learning_rate = learning_rate
 model.only_mid_control = only_mid_control
 
 # Misc
-dataset = MVTecDataset('test')
+# 修复：补充数据路径并启用内存加载（可选）
+dataset = MVTecDataset('test', root='/root/autodl-tmp/mvtecad/', load_to_ram=True)
 # test_dataset = VisaDataset('test')
 dataloader = DataLoader(dataset, num_workers=8, batch_size=batch_size, shuffle=True)
 pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
@@ -54,6 +57,7 @@ pretrained_model = pretrained_model.cuda()
 pretrained_model.eval()
 
 model.eval()
+# 确保目录存在
 os.makedirs(evl_dir, exist_ok=True)
 with torch.no_grad():
     for input in dataloader:
@@ -62,7 +66,8 @@ with torch.no_grad():
         model = model.cuda()
         output= model.log_images_test(input)
         images = output
-        log_local(images, input["filename"][0])
+        # 注意：log_local 内部可能也需要对应修改路径，如果它写死了 log_image/
+        log_local(images, input["filename"][0], save_dir=os.path.join('log_image', model_name))
         output_img = images['samples']
         output_features = pretrained_model(output_img.cuda())
         input_features = input_features[1:4]
@@ -75,7 +80,10 @@ with torch.no_grad():
         anomaly_map_prediction = anomaly_map.unsqueeze(dim=0).unsqueeze(dim=1)
         input["mask"] = input["mask"]
 
-        root = os.path.join('log_image/')
+        # 修改：图像保存路径也增加模型名称嵌套
+        root = os.path.join('log_image', model_name)
+        os.makedirs(os.path.join(root, input["filename"][0][:-7]), exist_ok=True)
+        
         name = input["filename"][0][-7:-4]
         filename_feature = "{}-features.jpg".format(name)
         path_feature = os.path.join(root, input["filename"][0][:-7], filename_feature)
@@ -97,7 +105,9 @@ with torch.no_grad():
         image_copy = image.copy()
         out_heat_map = cv2.addWeighted(heatmap, 0.5, image_copy, 0.5, 0, image_copy)
         heatmap_name = "{}-heatmap.png".format(name)
-        cv2.imwrite(root + input["filename"][0][:-7] + heatmap_name, out_heat_map)
+        # 修改：使用 os.path.join 拼接路径更安全
+        heatmap_save_path = os.path.join(root, input["filename"][0][:-7], heatmap_name)
+        cv2.imwrite(heatmap_save_path, out_heat_map)
 
         input['pred'] = anomaly_map_prediction
         input["output"] = output_img.cpu()

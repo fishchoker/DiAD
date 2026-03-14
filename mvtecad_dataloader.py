@@ -1,5 +1,6 @@
 # 导入必要的库
 import json
+import random
 import cv2
 import numpy as np
 from PIL import Image
@@ -60,30 +61,95 @@ class MVTecDataset(Dataset):
                 for line in f:
                     self.data.append(json.loads(line))
         
-        # 15个类别的名称到索引的映射
-        self.label_to_idx = {'bottle': '0', 'cable': '1', 'capsule': '2', 'carpet': '3', 'grid': '4', 'hazelnut': '5',
-                             'leather': '6', 'metal_nut': '7', 'pill': '8', 'screw': '9', 'tile': '10',
-                             'toothbrush': '11', 'transistor': '12', 'wood': '13', 'zipper': '14'}
+        # 15个类别的物理名称清单 (此顺序为系统唯一、不可更改的物理索引参考)
+        self.CLASS_NAMES = [
+            'bottle', 'cable', 'capsule', 'carpet', 'grid', 'hazelnut', 'leather', 'metal_nut',
+            'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper'
+        ]
+        
+        # 建立类别名称到物理索引 (0-14) 的唯一映射，消除任何 Shuffle 或字典排序带来的漂移
+        self.label_to_idx = {name: str(idx) for idx, name in enumerate(self.CLASS_NAMES)}
+        
         self.image_size = (256, 256) # 默认图像尺寸
         self.root = root
 
-        #补上各个类别对应的正常描述
+        # 15个类别的 Top 3 高分提示词 (键名必须与 self.CLASS_NAMES 完全匹配)
         self.class_prompts = {
-            'bottle': 'a photo of a normal bottle without defect',
-            'cable': 'a photo of a normal cable without defect',
-            'capsule': 'a photo of a normal capsule without defect',
-            'carpet': 'a photo of a normal carpet without defect',
-            'grid': 'a photo of a normal grid without defect',
-            'hazelnut': 'a photo of a normal hazelnut without defect',
-            'leather': 'a photo of a normal leather without defect',
-            'metal_nut': 'a photo of a normal metal nut without defect',
-            'pill': 'a photo of a normal pill without defect',
-            'screw': 'a photo of a normal screw without defect',
-            'tile': 'a photo of a normal tile without defect',
-            'toothbrush': 'a photo of a normal toothbrush without defect',
-            'transistor': 'a photo of a normal transistor without defect',
-            'wood': 'a photo of a normal wood surface without defect',
-            'zipper': 'a photo of a normal zipper without defect'
+            'bottle': [
+                "a normal bottle with clean edges",
+                "a normal bottle with uniform color and consistent texture",
+                "a normal bottle without defect"
+            ],
+            'cable': [
+                "a normal cable with intact surface, consistent texture, and clean edges",
+                "a normal cable with uniform color and consistent texture",
+                "a normal cable with clean edges"
+            ],
+            'capsule': [
+                "a normal capsule with smooth texture",
+                "a normal capsule with uniform color and consistent texture",
+                "a normal capsule with intact surface, consistent texture, and clean edges"
+            ],
+            'carpet': [
+                "a normal carpet with uniform color and consistent texture",
+                "a normal carpet with intact surface, consistent texture, and clean edges",
+                "a normal carpet with clean edges"
+            ],
+            'grid': [
+                "a normal grid with intact surface, consistent texture, and clean edges",
+                "a normal grid with clean edges",
+                "a normal grid with smooth texture"
+            ],
+            'hazelnut': [
+                "a normal hazelnut with clean edges",
+                "a normal hazelnut with intact surface, consistent texture, and clean edges",
+                "a normal hazelnut with uniform color and consistent texture"
+            ],
+            'leather': [
+                "a normal leather with smooth texture",
+                "a normal leather with intact surface, consistent texture, and clean edges",
+                "a normal leather with uniform color and consistent texture"
+            ],
+            'metal_nut': [
+                "a standard metal nut showing clear structural details",
+                "a normal metal nut without defect",
+                "a normal metal nut with uniform color and consistent texture"
+            ],
+            'pill': [
+                "a normal pill with smooth texture",
+                "a normal pill with clean edges",
+                "a normal pill with intact surface, consistent texture, and clean edges"
+            ],
+            'screw': [
+                "a normal screw with smooth texture",
+                "a normal screw with intact surface, consistent texture, and clean edges",
+                "a standard screw showing clear structural details"
+            ],
+            'tile': [
+                "a normal tile with intact surface, consistent texture, and clean edges",
+                "a normal tile with smooth texture",
+                "a normal tile with clean edges"
+            ],
+            'toothbrush': [
+                "a normal toothbrush without defect",
+                "a normal toothbrush with smooth texture",
+                "a normal toothbrush with intact surface, consistent texture, and clean edges"
+            ],
+            'transistor': [
+                "a normal transistor with clean edges",
+                "a normal transistor with intact surface, consistent texture, and clean edges",
+                "a normal transistor with smooth texture"
+            ],
+            'wood': [
+                "a normal wood with uniform color and consistent texture",
+                "a normal wood with clean edges",
+                "a normal wood with smooth texture"
+            ],
+            'zipper': [
+                "a normal zipper with uniform color and consistent texture",
+                "a normal zipper with intact surface, consistent texture, and clean edges",
+                "a standard zipper showing clear structural details"
+            ]
         }
 
         # 加载到内存逻辑
@@ -124,7 +190,7 @@ class MVTecDataset(Dataset):
                 raise ValueError("Labels must be [None, 0, 1]!")
 
         #prompt = "" # 提示词，默认为空
-        prompt = self.class_prompts[item["clsname"]] # 获取对应类别正常描述
+        prompt = self.class_prompts[item["clsname"]] # 获取对应类别的 Top 3 提示词列表
 
 
         # 读取图像并转换颜色空间 (OpenCV BGR -> RGB)

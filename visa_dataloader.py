@@ -25,21 +25,34 @@ class VisaDataset(Dataset):
         self.image_size = (256,256)
         self.root = root
 
-        # 各个类别对应的正常描述，用于 CLIP 文本编码
+        # 各个类别对应的正常描述 (Prompt Ensemble)
         self.class_prompts = {
-            'candle': 'a photo of a normal candle without defect',
-            'capsules': 'a photo of normal capsules without defect',
-            'cashew': 'a photo of normal cashew nuts without defect',
-            'chewinggum': 'a photo of normal chewing gum without defect',
-            'fryum': 'a photo of normal fryum without defect',
-            'macaroni1': 'a photo of normal macaroni without defect',
-            'macaroni2': 'a photo of normal macaroni without defect',
-            'pcb1': 'a photo of a normal printed circuit board without defect',
-            'pcb2': 'a photo of a normal printed circuit board without defect',
-            'pcb3': 'a photo of a normal printed circuit board without defect',
-            'pcb4': 'a photo of a normal printed circuit board without defect',
-            'pipe_fryum': 'a photo of normal pipe fryum without defect'
+            k: [
+                f"a photo of a normal {k} without defect",
+                f"a normal {k} with intact surface, consistent texture, and clean edges",
+                f"a photo of a normal {k} with smooth texture",
+                f"a normal {k} with uniform color and consistent texture",
+                f"a close-up photo of a normal {k} with clean edges"
+            ] for k in self.label_to_idx.keys()
         }
+        # 针对特殊类别的微调
+        self.class_prompts['capsules'] = [
+            "a photo of normal capsules without defect",
+            "normal capsules with intact surface, consistent texture, and clean edges",
+            "a photo of normal capsules with smooth texture",
+            "normal capsules with uniform color and consistent texture",
+            "a close-up photo of normal capsules with clean edges"
+        ]
+        self.class_prompts['pcb1'] = [
+            "a photo of a normal printed circuit board without defect",
+            "a normal printed circuit board with intact surface, consistent texture, and clean edges",
+            "a photo of a normal printed circuit board with smooth texture",
+            "a normal printed circuit board with uniform color and consistent texture",
+            "a close-up photo of a normal printed circuit board with clean edges"
+        ]
+        self.class_prompts['pcb2'] = self.class_prompts['pcb1']
+        self.class_prompts['pcb3'] = self.class_prompts['pcb1']
+        self.class_prompts['pcb4'] = self.class_prompts['pcb1']
 
     def __len__(self):
         return len(self.data)

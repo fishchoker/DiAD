@@ -381,24 +381,82 @@ class DiAD(LatentDiffusion):
         self.control_key = control_key
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
+        
+        # 系统权威物理类别清单 (必须与 MVTecDataset.CLASS_NAMES 保持一致)
+        self.CLASS_NAMES = [
+            'bottle', 'cable', 'capsule', 'carpet', 'grid', 'hazelnut', 'leather', 'metal_nut',
+            'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper'
+        ]
+        
+        # 15个类别的 Top 3 高分提示词字典
+        raw_prompts = {
+            'bottle': ["a normal bottle with clean edges", "a normal bottle with uniform color and consistent texture", "a normal bottle without defect"],
+            'cable': ["a normal cable with intact surface, consistent texture, and clean edges", "a normal cable with uniform color and consistent texture", "a normal cable with clean edges"],
+            'capsule': ["a normal capsule with smooth texture", "a normal capsule with uniform color and consistent texture", "a normal capsule with intact surface, consistent texture, and clean edges"],
+            'carpet': ["a normal carpet with uniform color and consistent texture", "a normal carpet with intact surface, consistent texture, and clean edges", "a normal carpet with clean edges"],
+            'grid': ["a normal grid with intact surface, consistent texture, and clean edges", "a normal grid with clean edges", "a normal grid with smooth texture"],
+            'hazelnut': ["a normal hazelnut with clean edges", "a normal hazelnut with intact surface, consistent texture, and clean edges", "a normal hazelnut with uniform color and consistent texture"],
+            'leather': ["a normal leather with smooth texture", "a normal leather with intact surface, consistent texture, and clean edges", "a normal leather with uniform color and consistent texture"],
+            'metal_nut': ["a standard metal nut showing clear structural details", "a normal metal nut without defect", "a normal metal nut with uniform color and consistent texture"],
+            'pill': ["a normal pill with smooth texture", "a normal pill with clean edges", "a normal pill with intact surface, consistent texture, and clean edges"],
+            'screw': ["a normal screw with smooth texture", "a normal screw with intact surface, consistent texture, and clean edges", "a standard screw showing clear structural details"],
+            'tile': ["a normal tile with intact surface, consistent texture, and clean edges", "a normal tile with smooth texture", "a normal tile with clean edges"],
+            'toothbrush': ["a normal toothbrush without defect", "a normal toothbrush with smooth texture", "a normal toothbrush with intact surface, consistent texture, and clean edges"],
+            'transistor': ["a normal transistor with clean edges", "a normal transistor with intact surface, consistent texture, and clean edges", "a normal transistor with smooth texture"],
+            'wood': ["a normal wood with uniform color and consistent texture", "a normal wood with clean edges", "a normal wood with smooth texture"],
+            'zipper': ["a normal zipper with uniform color and consistent texture", "a normal zipper with intact surface, consistent texture, and clean edges", "a standard zipper showing clear structural details"]
+        }
+        
+        # 强制基于 CLASS_NAMES 的顺序构建列表，确保物理索引 100% 对齐
+        self.class_prompts_list = [raw_prompts[name] for name in self.CLASS_NAMES]
+        
+        # 注册一个空 buffer 用于存储预计算的 Embedding
+        # persistent=False 确保它不会保存在 checkpoint 中，每次启动都会根据代码中的提示词重新计算
+        self.register_buffer("prompt_cache", torch.tensor([]), persistent=False)
 
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
-        x, c = super().get_input(batch, self.first_stage_key, *args, **kwargs)
+        # 首次运行时预计算缓存 (检查 buffer 是否为空)
+        if self.prompt_cache.numel() == 0:
+            print("Pre-calculating and caching prompt ensemble embeddings...")
+            all_embeddings = []
+            for class_group in self.class_prompts_list:
+                # class_group 是一个 List[str], FrozenCLIPEmbedder 期望 List[str] 作为 batch 输入
+                c_group = self.get_learned_conditioning(class_group)
+                # 计算平均值 (1, L, D)
+                c_mean = c_group.mean(dim=0, keepdim=True)
+                all_embeddings.append(c_mean)
+            
+            # 直接更新 buffer 的数据
+            self.prompt_cache = torch.cat(all_embeddings, dim=0)
+            print(f"Cached embeddings for {len(self.class_prompts_list)} classes.")
+
+        # 处理嵌套列表问题：super().get_input 会尝试编码 batch[self.cond_stage_key]
+        # 如果 batch['txt'] 是 [['s1','s2','s3'], ...] 这种嵌套列表，CLIP Tokenizer 会报错
+        original_txt = batch.get(self.cond_stage_key, None)
+        if isinstance(original_txt, (list, tuple)) and len(original_txt) > 0 and isinstance(original_txt[0], (list, tuple)):
+            # 暂时替换为扁平列表以绕过 super().get_input 中的编码报错
+            batch[self.cond_stage_key] = [t[0] for t in original_txt]
+            x, _ = super().get_input(batch, self.first_stage_key, *args, **kwargs)
+            batch[self.cond_stage_key] = original_txt # 还原原始数据
+        else:
+            x, _ = super().get_input(batch, self.first_stage_key, *args, **kwargs)
+        
+        # 从缓存中根据 image_idx 获取对应的平均 Embedding
+        image_idxs = batch['image_idx']
+        if isinstance(image_idxs, list):
+            image_idxs = torch.tensor([int(i) for i in image_idxs], device=self.device)
+        elif isinstance(image_idxs, torch.Tensor):
+            image_idxs = image_idxs.to(self.device).long()
+            
+        c = self.prompt_cache[image_idxs] # (B, L, D)
+
         control = batch[self.control_key]
         if bs is not None:
             control = control[:bs]
         control = control.to(self.device)
-        # control = einops.rearrange(control, 'b h w c -> b c h w')
         control = control.to(memory_format=torch.contiguous_format).float()
-        # 返回值对应 ControlNet 的标准输入结构
-        # x  → diffusion input (latent) 输入图像经过VAE得到的潜表示
-        # cond = {
-        #     c_crossattn : text condition
-        #     c_concat    : controlnet condition
-        # }
-        # 测试clip是否正常
-        # print("CLIP embedding:", c.shape)
+        
         return x, dict(c_crossattn=[c], c_concat=[control])
 
     def apply_model(self, x_noisy, t, cond, *args, **kwargs):
@@ -527,7 +585,10 @@ class DiAD(LatentDiffusion):
         log["reconstruction"] = self.decode_first_stage(z)
         # log["control"] = c_cat * 2.0 - 1.0
         log["control"] = c_cat
-        log["conditioning"] = log_txt_as_img((512, 512), batch[self.cond_stage_key], size=16)
+        # 可视化文本提示词 (若为 Ensemble，只显示第一个)
+        prompts = batch[self.cond_stage_key]
+        vis_prompts = [p[0] for p in prompts] if isinstance(prompts[0], (list, tuple)) else prompts
+        log["conditioning"] = log_txt_as_img((512, 512), vis_prompts, size=16)
 
 
         if plot_diffusion_rows:

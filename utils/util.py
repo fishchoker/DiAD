@@ -40,12 +40,12 @@ def create_logger(name, log_file, level=logging.INFO):
     log.addHandler(sh)
     return log
 
-def log_local(images, filenames):
+def log_local(images, filenames, save_dir='log_image/'):
     pixel_mean = [0.485, 0.456, 0.406]
     pixel_std = [0.229, 0.224, 0.225]
     pixel_mean = torch.tensor(pixel_mean).cuda().unsqueeze(1).unsqueeze(1)  # 3 x 1 x 1
     pixel_std = torch.tensor(pixel_std).cuda().unsqueeze(1).unsqueeze(1)
-    root = os.path.join('log_image/')
+    root = save_dir
     name = filenames[-7:-4]
     for k in images:
         image = (images[k].squeeze() * pixel_std + pixel_mean) * 255

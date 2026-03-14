@@ -33,4 +33,6 @@ samples/
 
 # OS files
 .DS_Store
-Thumbs.db
+Thumbs.dblog/
+val_ckpt/
+training/
