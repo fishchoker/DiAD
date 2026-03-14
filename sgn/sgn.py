@@ -388,23 +388,83 @@ class DiAD(LatentDiffusion):
             'pill', 'screw', 'tile', 'toothbrush', 'transistor', 'wood', 'zipper'
         ]
         
-        # 15个类别的 Top 3 高分提示词字典
+        # 15个类别的 Top 3 高分提示词字典 (根据 CLIP 评估结果更新)
         raw_prompts = {
-            'bottle': ["a normal bottle with clean edges", "a normal bottle with uniform color and consistent texture", "a normal bottle without defect"],
-            'cable': ["a normal cable with intact surface, consistent texture, and clean edges", "a normal cable with uniform color and consistent texture", "a normal cable with clean edges"],
-            'capsule': ["a normal capsule with smooth texture", "a normal capsule with uniform color and consistent texture", "a normal capsule with intact surface, consistent texture, and clean edges"],
-            'carpet': ["a normal carpet with uniform color and consistent texture", "a normal carpet with intact surface, consistent texture, and clean edges", "a normal carpet with clean edges"],
-            'grid': ["a normal grid with intact surface, consistent texture, and clean edges", "a normal grid with clean edges", "a normal grid with smooth texture"],
-            'hazelnut': ["a normal hazelnut with clean edges", "a normal hazelnut with intact surface, consistent texture, and clean edges", "a normal hazelnut with uniform color and consistent texture"],
-            'leather': ["a normal leather with smooth texture", "a normal leather with intact surface, consistent texture, and clean edges", "a normal leather with uniform color and consistent texture"],
-            'metal_nut': ["a standard metal nut showing clear structural details", "a normal metal nut without defect", "a normal metal nut with uniform color and consistent texture"],
-            'pill': ["a normal pill with smooth texture", "a normal pill with clean edges", "a normal pill with intact surface, consistent texture, and clean edges"],
-            'screw': ["a normal screw with smooth texture", "a normal screw with intact surface, consistent texture, and clean edges", "a standard screw showing clear structural details"],
-            'tile': ["a normal tile with intact surface, consistent texture, and clean edges", "a normal tile with smooth texture", "a normal tile with clean edges"],
-            'toothbrush': ["a normal toothbrush without defect", "a normal toothbrush with smooth texture", "a normal toothbrush with intact surface, consistent texture, and clean edges"],
-            'transistor': ["a normal transistor with clean edges", "a normal transistor with intact surface, consistent texture, and clean edges", "a normal transistor with smooth texture"],
-            'wood': ["a normal wood with uniform color and consistent texture", "a normal wood with clean edges", "a normal wood with smooth texture"],
-            'zipper': ["a normal zipper with uniform color and consistent texture", "a normal zipper with intact surface, consistent texture, and clean edges", "a standard zipper showing clear structural details"]
+            'bottle': [
+                "a photo of the bottle without damage for anomaly detection.",
+                "a close-up photo of a bottle.",
+                "a close-up photo of a bottle without damage."
+            ],
+            'cable': [
+                "a photo of a unblemished cable for visual inspection.",
+                "a close-up photo of the cable without damage.",
+                "a close-up photo of a unblemished cable"
+            ],
+            'capsule': [
+                "a photo of a small capsule without flaw.",
+                "a photo of the small capsule without flaw.",
+                "a close-up photo of a capsule without flaw."
+            ],
+            'carpet': [
+                "a photo of the carpet without flaw for anomaly detection.",
+                "a cropped photo of the carpet without defect.",
+                "a photo of the carpet for anomaly detection"
+            ],
+            'grid': [
+                "a close-up photo of a grid without damage.",
+                "a close-up photo of a grid without defect.",
+                "a cropped photo of a grid without defect."
+            ],
+            'hazelnut': [
+                "a cropped photo of a hazelnut.",
+                "a cropped photo of a hazelnut without damage.",
+                "a photo of a hazelnut without damage for anomaly detection."
+            ],
+            'leather': [
+                "a cropped photo of a leather.",
+                "a cropped photo of a leather without damage.",
+                "a close-up photo of a leather without damage."
+            ],
+            'metal_nut': [
+                "a photo of a metal nut without defect for visual inspection.",
+                "a close-up photo of a metal nut without defect.",
+                "a photo of a unblemished metal nut for visual inspection."
+            ],
+            'pill': [
+                "a photo of a unblemished pill for visual inspection.",
+                "a photo of a pill without flaw for visual inspection.",
+                "a photo of the pill without flaw for visual inspection."
+            ],
+            'screw': [
+                "a photo of a small screw.",
+                "a photo of a small unblemished screw.",
+                "a photo of a small screw without damage."
+            ],
+            'tile': [
+                "a close-up photo of a tile without damage.",
+                "a close-up photo of a tile without defect.",
+                "a photo of the tile without damage."
+            ],
+            'toothbrush': [
+                "a photo of a unblemished toothbrush for visual inspection.",
+                "a photo of the toothbrush without defect.",
+                "a close-up photo of the toothbrush without defect."
+            ],
+            'transistor': [
+                "a photo of a transistor without damage for anomaly detection.",
+                "a photo of the transistor without damage for anomaly detection.",
+                "a photo of the small transistor without damage."
+            ],
+            'wood': [
+                "a cropped photo of the wood surface without defect.",
+                "a cropped photo of a wood surface without defect.",
+                "a close-up photo of the wood surface without defect."
+            ],
+            'zipper': [
+                "a photo of the unblemished zipper for anomaly detection.",
+                "a cropped photo of a zipper without flaw.",
+                "a cropped photo of the zipper without flaw."
+            ]
         }
         
         # 强制基于 CLASS_NAMES 的顺序构建列表，确保物理索引 100% 对齐
