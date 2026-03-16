@@ -114,8 +114,10 @@ model = create_model('models/diad.yaml').cpu() # 根据 YAML 配置文件创建�
 if not last_ckpt:
     model.load_state_dict(load_state_dict(resume_path, location='cpu'), strict=False)
     print(f"成功加载预训练权重: {resume_path}")
+    model.learning_rate = learning_rate
+else:
+    print(f"检测到续训模式，将跳过硬编码的学习率设置，完全交给优化器状态恢复。")
 
-model.learning_rate = learning_rate
 model.only_mid_control = only_mid_control
 
 # 数据准备
