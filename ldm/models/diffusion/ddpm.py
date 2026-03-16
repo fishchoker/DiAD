@@ -96,6 +96,7 @@ class DDPM(pl.LightningModule):
         self.use_positional_encodings = use_positional_encodings
         self.model = DiffusionWrapper(unet_config, conditioning_key)
         count_params(self.model, verbose=True)
+        self.pretrained_model = None # 预留评价模型位置
         self.use_ema = use_ema
         if self.use_ema:
             self.model_ema = LitEma(self.model)
@@ -446,23 +447,23 @@ class DDPM(pl.LightningModule):
 
         loss, loss_dict = self.shared_step(batch)
 
-        # 获取 batch_size 以避免 PL 的推断警告
-        batch_size = batch[self.first_stage_key].shape[0]
-
         self.log_dict(loss_dict, prog_bar=True,
-                      logger=True, on_step=True, on_epoch=True, batch_size=batch_size)
+                      logger=True, on_step=True, on_epoch=True)
 
         self.log("global_step", self.global_step,
-                 prog_bar=True, logger=True, on_step=True, on_epoch=False, batch_size=batch_size)
+                 prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]['lr']
-            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False, batch_size=batch_size)
+            self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
 
         return loss
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
+        # 确保评价模型在执行验证步之前已加载 (防止续训启动瞬间的 NoneType 错误)
+        self._ensure_pretrained_model()
+        
         input_img = batch['jpg']
         input_features = self.pretrained_model(input_img)
         output = self.log_images_test(batch)
@@ -486,10 +487,19 @@ class DDPM(pl.LightningModule):
         torch.cuda.empty_cache()
         self.evl_dir = "npz_result"
         self.logger_val = create_logger("global_logger", "log/")
-        pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
-        self.pretrained_model = pretrained_model.cuda()
-        self.pretrained_model.eval()
+        
+        # 确保评价模型已初始化并位于正确设备
+        self._ensure_pretrained_model()
+            
         os.makedirs(self.evl_dir, exist_ok=True)
+
+    def _ensure_pretrained_model(self):
+        """确保 ResNet50 评价骨干网已在正确设备上加载"""
+        if self.pretrained_model is None:
+            print("Initializing evaluation backbone (ResNet50)...")
+            pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
+            self.pretrained_model = pretrained_model.to(self.device)
+            self.pretrained_model.eval()
 
     @torch.no_grad()
     def on_validation_epoch_end(self, *args, **kwargs):
@@ -508,6 +518,22 @@ class DDPM(pl.LightningModule):
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
             self.model_ema(self.model)
+
+    def on_load_checkpoint(self, checkpoint):
+        """
+        在加载检查点时执行的拦截逻辑。
+        强制删除 checkpoint 中所有以 'pretrained_model' 开头的键，
+        解决 'Unexpected keys' 警告并防止续训时的状态冲突导致退出。
+        """
+        state_dict = checkpoint.get('state_dict', {})
+        keys = list(state_dict.keys())
+        removed_count = 0
+        for k in keys:
+            if k.startswith('pretrained_model'):
+                del state_dict[k]
+                removed_count += 1
+        if removed_count > 0:
+            print(f"INFO: 从检查点中移除了 {removed_count} 个评价模型 (ResNet50) 权重键值，以确保续训稳定。")
 
     def _get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
@@ -583,6 +609,10 @@ class LatentDiffusion(DDPM):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
         assert self.num_timesteps_cond <= kwargs['timesteps']
+        
+        # 预留评价模型位置，防止加载检查点时出现 Unexpected Keys
+        self.pretrained_model = None 
+        
         # for backwards compatibility after implementation of DiffusionWrapper
         if conditioning_key is None:
             conditioning_key = 'concat' if concat_mode else 'crossattn'
@@ -623,6 +653,22 @@ class LatentDiffusion(DDPM):
             print(" +++++++++++ WARNING: RESETTING NUM_EMA UPDATES TO ZERO +++++++++++ ")
             assert self.use_ema
             self.model_ema.reset_num_updates()
+
+    def on_load_checkpoint(self, checkpoint):
+        """
+        在加载检查点时执行的拦截逻辑。
+        强制删除 checkpoint 中所有以 'pretrained_model' 开头的键，
+        解决 'Unexpected keys' 警告并防止续训时的状态冲突导致退出。
+        """
+        state_dict = checkpoint['state_dict']
+        keys = list(state_dict.keys())
+        removed_count = 0
+        for k in keys:
+            if k.startswith('pretrained_model'):
+                del state_dict[k]
+                removed_count += 1
+        if removed_count > 0:
+            print(f"INFO: 从检查点中移除了 {removed_count} 个评价模型 (ResNet50) 权重键值，以确保续训稳定。")
 
     def make_cond_schedule(self, ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
