@@ -27,7 +27,7 @@ batch_size = 12 # 训练批大小（Batch Size）
 logger_freq = 3000000000000 # 日志记录频率，此处设置得非常大以减少记录次数
 learning_rate = 1e-5 # 学习率
 only_mid_control = True # 标志位，可能用于控制模型中间层的行为
-data_path = '/root/autodl-tmp/mvtecad/' # 数据集存放的根目录
+data_path = './training/MVTec-AD' # 数据集存放的根目录
 
 # 初始化模型
 # 首先在 CPU 上创建模型，PyTorch Lightning 会在训练开始时自动将其移动到配置好的 GPU 上
@@ -60,7 +60,7 @@ logger = ImageLogger(batch_frequency=logger_freq)
 # callbacks: 包含图像记录和模型检查点保存
 # accumulate_grad_batches=4: 梯度累加，每 4 个 batch 更新一次参数，相当于增大了 4 倍 batch size
 # check_val_every_n_epoch=25: 每隔 25 个 epoch 进行一次验证集评估
-trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=25)
-
+trainer = pl.Trainer(gpus=1, max_epochs=400, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=20)
+#trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=25)
 # 开始执行训练流程
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)

@@ -111,7 +111,9 @@ logger_freq = 3000000000000
 learning_rate = 4.5e-5
 sd_locked = False
 only_mid_control = True
-data_path = './data/mvtecad/'
+# data_path = './data/mvtecad/'
+data_path = './training/MVTec-AD/mvtec_anomaly_detection/'
+
 
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 model = create_model('./models/autoencoder_kl_32x32x4.yaml').cpu()
