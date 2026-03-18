@@ -1,79 +1,30 @@
-############################
-# 🔧 IDE / 编辑器
-############################
-.idea/
-.vscode/
-*.iml
-
-############################
-# 🐍 Python 缓存
-############################
+# Ignore python cache and IDE settings
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-############################
-# 📓 Jupyter Notebook
-############################
+.idea/
 .ipynb_checkpoints/
 
-############################
-# 📦 环境 / 依赖
-############################
-.env
-.venv/
-env/
-venv/
-ENV/
-
-# Conda
-*.conda
-*.env.yaml
-condaenv*.txt
-
-############################
-# 🧪 实验 / 日志 / 输出
-############################
-lightning_logs/
-*.log
-*.out
-
-# 训练输出（你可以按需调整）
-outputs/
-checkpoints/
-ckpt/
-*.ckpt
-
-############################
-# 📊 数据集 / 标注（建议不上传）
-############################
+# Ignore large model files and checkpoints
+models/
+models/*.ckpt
+models/*.zip
+val_ckpt/
 training/
-data/
-datasets/
 
-############################
-# 🧬 编译 / 临时文件
-############################
-*.so
-*.dylib
-*.dll
+# Ignore logs and output files
+*.out
+*.err
+log/
+logs/
+lightning_logs/
+image_log/
+log_image/
+npz_result/
+# dataset&else
+taming/
 
-############################
-# 🧾 系统文件
-############################
-.DS_Store
-Thumbs.db
-
-############################
-# 🚫 Git 子模块 / 未跟踪内容
-############################
-# 如果 src/taming-transformers 是外部仓库
-src/taming-transformers/
-
-############################
-# ⚠️ 可选忽略（按需）
-############################
-# 如果你不想提交环境配置
-# environment.yaml
-# current_env.yaml
+# Ignore sh
+*.sh
+*.out
+*.err
+extensions/
+User/

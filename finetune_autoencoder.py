@@ -118,16 +118,20 @@ data_path = './training/MVTec-AD/mvtec_anomaly_detection/'
 # First use cpu to load models. Pytorch Lightning will automatically move it to GPUs.
 model = create_model('./models/autoencoder_kl_32x32x4.yaml').cpu()
 model.load_state_dict(load_state_dict(resume_path, location='cpu'),strict=False)
-model.learning_rate = batch_size * learning_rate
-
+# model.learning_rate = batch_size * learning_rate
+num_gpus = 2
+model.learning_rate = batch_size * num_gpus * learning_rate
 
 # Misc
 # train_dataset = VisaDataset('train', data_path)
 train_dataset = MVTecDataset('train', data_path)
-train_dataloader = DataLoader(train_dataset, num_workers=8, batch_size=batch_size, shuffle=True)
+#train_dataloader = DataLoader(train_dataset, num_workers=8, batch_size=batch_size, shuffle=True)
+# 3 cores TT
+train_dataloader = DataLoader(train_dataset, num_workers=6, batch_size=batch_size, shuffle=True)
 logger = ImageLogger(batch_frequency=logger_freq)
-trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger],  accumulate_grad_batches=8)
-
+# trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger],  accumulate_grad_batches=8)
+# 开启混合精度
+trainer = pl.Trainer(gpus=2,strategy="ddp", precision=16, callbacks=[logger],  accumulate_grad_batches=4)
 # Train!
 trainer.fit(model, train_dataloaders=train_dataloader)
 
