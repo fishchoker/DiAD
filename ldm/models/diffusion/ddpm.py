@@ -480,7 +480,8 @@ class DDPM(pl.LightningModule):
     @torch.no_grad()
     def on_validation_epoch_start(self):
         self.evl_dir = "npz_result"
-        self.logger_val = create_logger("global_logger", "log/")
+        if self.trainer.is_global_zero:
+            self.logger_val = create_logger("global_logger", "log/")
         pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
         self.pretrained_model = pretrained_model.cuda()
         self.pretrained_model.eval()

@@ -18,6 +18,7 @@ from ldm.models.diffusion.ddpm import LatentDiffusion
 from ldm.util import log_txt_as_img, exists, instantiate_from_config
 from ldm.models.diffusion.ddim import DDIMSampler
 import torchvision
+from .prompts import CATEGORY_PROMPTS
 
 def custom_sigmoid(x):
     return 1 / (1 + torch.exp(-(x - 600) / 10))
@@ -372,25 +373,61 @@ class DiAD(LatentDiffusion):
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
 
+    # 送入 U-Net 的所有条件（Conditioning）
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
-        x, c = super().get_input(batch, self.first_stage_key, *args, **kwargs)
+        # 1. 获取第一阶段的 latent 编码 (z)
+        z, _ = super().get_input(batch, self.first_stage_key, bs=bs, *args, **kwargs)
+
+        # 2. 获取当前 Batch 的类别名称
+        clsnames = batch['clsname']
+        if bs is not None:
+            clsnames = clsnames[:bs]
+        
+        # 3. Ensemble Prompts (正常先验引导)
+        all_prompts = []
+        for cls in clsnames:
+            # 获取该类别的 3 个提示词，如果没有则使用默认模板
+            prompts = CATEGORY_PROMPTS.get(cls, [f"a photo of a {cls}"] * 3)
+            all_prompts.extend(prompts[:3])
+        
+        # 编码并集成
+        c_all = self.get_learned_conditioning(all_prompts)
+        c_ensemble = rearrange(c_all, '(b n) l d -> b n l d', n=3).mean(dim=1)
+
+        # 4. Base Prompts (原本的类别提示，用于后期释放约束)
+        base_prompts = [f"a photo of a {cls}" for cls in clsnames]
+        c_base = self.get_learned_conditioning(base_prompts)
+
+        # 5. 获取 ControlNet 的 Hint 输入
         control = batch[self.control_key]
         if bs is not None:
             control = control[:bs]
         control = control.to(self.device)
-        # control = einops.rearrange(control, 'b h w c -> b c h w')
         control = control.to(memory_format=torch.contiguous_format).float()
-        return x, dict(c_crossattn=[c], c_concat=[control])
+        
+        return z, dict(c_crossattn=[c_ensemble], c_base=[c_base], c_concat=[control])
 
     def apply_model(self, x_noisy, t, cond, *args, **kwargs):
         assert isinstance(cond, dict)
         diffusion_model = self.model.diffusion_model
-        cond_txt = torch.cat(cond['c_crossattn'], 1)
+        
+        # 获取集成提示词特征
+        c_ensemble = torch.cat(cond['c_crossattn'], 1)
+        
+        # 动态时间步切换逻辑
+        if 'c_base' in cond:
+            c_base = torch.cat(cond['c_base'], 1)
+            # 早期阶段 (t > 500) 使用强力的正常先验 (Ensemble)
+            # 后期阶段 (t <= 500) 切换回基础类别提示，避免语义过拟合
+            threshold = 500
+            use_ensemble = (t > threshold).view(-1, 1, 1).to(c_ensemble.dtype)
+            cond_txt = use_ensemble * c_ensemble + (1 - use_ensemble) * c_base
+        else:
+            # 如果没有 c_base (例如无条件生成)，则直接使用 c_crossattn
+            cond_txt = c_ensemble
 
-        # cond['c_concat'] = None
-
-        if cond['c_concat'] is None:
+        if cond.get('c_concat') is None:
             eps = diffusion_model(x=x_noisy, timesteps=t, context=cond_txt, control=None, only_mid_control=self.only_mid_control)
         else:
             control = self.control_model(x=x_noisy, hint=torch.cat(cond['c_concat'], 1), timesteps=t, context=cond_txt)
@@ -414,8 +451,16 @@ class DiAD(LatentDiffusion):
 
         log = dict()
         z, c = self.get_input(batch, self.first_stage_key, bs=N)
+        
+        # c 是一个包含 c_crossattn, c_base, c_concat 的字典
         c_cat = c["c_concat"][0][:N]
-        c = c["c_crossattn"][0][:N]
+        # 准备完整的条件字典用于采样
+        cond = {
+            "c_concat": [c_cat],
+            "c_crossattn": c["c_crossattn"],
+            "c_base": c.get("c_base", None)
+        }
+        
         N = min(z.shape[0], N)
         n_row = min(z.shape[0], n_row)
         log["reconstruction"] = self.decode_first_stage(z)
@@ -428,7 +473,7 @@ class DiAD(LatentDiffusion):
 
         if sample:
             # get denoise row
-            samples, z_denoise_row = self.sample_log(cond={"c_concat": [c_cat], "c_crossattn": [c]},
+            samples, z_denoise_row = self.sample_log(cond=cond,
                                                      batch_size=N, ddim=use_ddim,
                                                      ddim_steps=ddim_steps, eta=ddim_eta)
             x_samples = self.decode_first_stage(samples)
@@ -440,8 +485,10 @@ class DiAD(LatentDiffusion):
         if unconditional_guidance_scale > 1.0:
             uc_cross = self.get_unconditional_conditioning(N)
             uc_cat = c_cat  # torch.zeros_like(c_cat)
-            uc_full = {"c_concat": [uc_cat], "c_crossattn": [uc_cross]}
-            samples_cfg, inter = self.sample_log_test(cond={"c_concat": [c_cat], "c_crossattn": [c]},
+            # 无条件引导时，c_base 也可以设为空
+            uc_full = {"c_concat": [uc_cat], "c_crossattn": [uc_cross], "c_base": [uc_cross]}
+            
+            samples_cfg, inter = self.sample_log_test(cond=cond,
                                              batch_size=N, ddim=use_ddim,
                                              ddim_steps=ddim_steps, eta=ddim_eta,
                                              unconditional_guidance_scale=unconditional_guidance_scale,
