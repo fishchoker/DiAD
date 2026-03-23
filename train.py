@@ -62,8 +62,8 @@ logger = ImageLogger(batch_frequency=logger_freq)
 # callbacks: 包含图像记录和模型检查点保存
 # accumulate_grad_batches=4: 梯度累加，每 4 个 batch 更新一次参数，相当于增大了 4 倍 batch size
 # check_val_every_n_epoch=25: 每隔 25 个 epoch 进行一次验证集评估
-# trainer = pl.Trainer(gpus=1, logger=tb_logger,fast_dev_run=True, max_epochs=400,precision=16 , callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=20)
+
 trainer = pl.Trainer(gpus=2, strategy="ddp", max_epochs=400,precision=16 , callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=20)
-#trainer = pl.Trainer(gpus=1, precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=25)
+#trainer = pl.Trainer(gpus=1,max_epochs=2,precision=32, callbacks=[logger,ckpt_callback_val_loss], accumulate_grad_batches=4, check_val_every_n_epoch=1)
 # 开始执行训练流程
 trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=test_dataloader)

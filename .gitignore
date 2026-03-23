@@ -4,7 +4,7 @@ __pycache__/
 .ipynb_checkpoints/
 
 # Ignore large model files and checkpoints
-models/
+models/git
 models/*.ckpt
 models/*.zip
 val_ckpt/

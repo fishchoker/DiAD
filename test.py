@@ -46,12 +46,12 @@ model.learning_rate = learning_rate
 model.only_mid_control = only_mid_control
 
 # Misc
-data_path = '/root/autodl-tmp/mvtecad/'
+data_path = './training/MVTec-AD/mvtec_anomaly_detection/'
 dataset = MVTecDataset('test', data_path)
 # test_dataset = VisaDataset('test', data_path)
 
 
-dataloader = DataLoader(dataset, num_workers=8, batch_size=batch_size, shuffle=True)
+dataloader = DataLoader(dataset, num_workers=3, batch_size=batch_size, shuffle=True)
 pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
 pretrained_model = pretrained_model.cuda()
 pretrained_model.eval()

@@ -373,9 +373,50 @@ class DiAD(LatentDiffusion):
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
 
+        # =========================
+        # ✅ Prompt Embedding Cache
+        # =========================
+        self.prompt_embeddings_cache = {}
+        self.prompt_base_cache = {}
+
+
+
+    @torch.no_grad()
+    def _init_prompt_cache(self):
+        """
+        预计算所有类别的 prompt embedding（只做一次）
+        """
+        device = self.device
+
+        if hasattr(self, "cond_stage_model"):
+            self.cond_stage_model.to(device)
+
+        print(f"Initializing Prompt Cache on {device}...")
+
+        for cls, prompts in CATEGORY_PROMPTS.items():
+            prompts = prompts[:3]
+
+            # -------- ensemble (3个prompt) --------
+            c_all = self.get_learned_conditioning(prompts)  # (3, L, D)
+            c_ensemble = c_all.mean(dim=0, keepdim=True)    # (1, L, D)
+
+            # -------- base prompt --------
+            base_prompt = [f"a photo of a {cls}"]
+            c_base = self.get_learned_conditioning(base_prompt)  # (1, L, D)
+
+            # -------- 存缓存 --------
+            self.prompt_embeddings_cache[cls] = c_ensemble.to(device)
+            self.prompt_base_cache[cls] = c_base.to(device)
+
+        print(f"[Prompt Cache] Loaded {len(self.prompt_embeddings_cache)} classes.")
+
     # 送入 U-Net 的所有条件（Conditioning）
     @torch.no_grad()
     def get_input(self, batch, k, bs=None, *args, **kwargs):
+        # 检查缓存是否已初始化（针对 DDP 模式）
+        if not self.prompt_embeddings_cache:
+            self._init_prompt_cache()
+
         # 1. 获取第一阶段的 latent 编码 (z)
         z, _ = super().get_input(batch, self.first_stage_key, bs=bs, *args, **kwargs)
 
@@ -384,20 +425,32 @@ class DiAD(LatentDiffusion):
         if bs is not None:
             clsnames = clsnames[:bs]
         
-        # 3. Ensemble Prompts (正常先验引导)
-        all_prompts = []
-        for cls in clsnames:
-            # 获取该类别的 3 个提示词，如果没有则使用默认模板
-            prompts = CATEGORY_PROMPTS.get(cls, [f"a photo of a {cls}"] * 3)
-            all_prompts.extend(prompts[:3])
+        # # 3. Ensemble Prompts (正常先验引导)
+        # all_prompts = []
+        # for cls in clsnames:
+        #     # 获取该类别的 3 个提示词，如果没有则使用默认模板
+        #     prompts = CATEGORY_PROMPTS.get(cls, [f"a photo of a {cls}"] * 3)
+        #     all_prompts.extend(prompts[:3])
         
-        # 编码并集成
-        c_all = self.get_learned_conditioning(all_prompts)
-        c_ensemble = rearrange(c_all, '(b n) l d -> b n l d', n=3).mean(dim=1)
+        # # 编码并集成
+        # c_all = self.get_learned_conditioning(all_prompts)
+        # c_ensemble = rearrange(c_all, '(b n) l d -> b n l d', n=3).mean(dim=1)
 
-        # 4. Base Prompts (原本的类别提示，用于后期释放约束)
-        base_prompts = [f"a photo of a {cls}" for cls in clsnames]
-        c_base = self.get_learned_conditioning(base_prompts)
+        # # 4. Base Prompts (原本的类别提示，用于后期释放约束)
+        # base_prompts = [f"a photo of a {cls}" for cls in clsnames]
+        # c_base = self.get_learned_conditioning(base_prompts)
+
+        # =========================
+        # ✅ 从缓存中直接取
+        # =========================
+        c_ensemble = torch.cat([
+            self.prompt_embeddings_cache[cls] for cls in clsnames
+        ], dim=0)
+
+        c_base = torch.cat([
+            self.prompt_base_cache[cls] for cls in clsnames
+        ], dim=0)
+
 
         # 5. 获取 ControlNet 的 Hint 输入
         control = batch[self.control_key]
