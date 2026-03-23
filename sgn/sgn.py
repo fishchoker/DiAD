@@ -465,21 +465,30 @@ class DiAD(LatentDiffusion):
         assert isinstance(cond, dict)
         diffusion_model = self.model.diffusion_model
         
-        # 获取集成提示词特征
+        # 1. 获取两套特征
         c_ensemble = torch.cat(cond['c_crossattn'], 1)
         
-        # 动态时间步切换逻辑
+        # 2. 计算平滑过渡系数 alpha
         if 'c_base' in cond:
             c_base = torch.cat(cond['c_base'], 1)
-            # 早期阶段 (t > 500) 使用强力的正常先验 (Ensemble)
-            # 后期阶段 (t <= 500) 切换回基础类别提示，避免语义过拟合
-            threshold = 500
-            use_ensemble = (t > threshold).view(-1, 1, 1).to(c_ensemble.dtype)
-            cond_txt = use_ensemble * c_ensemble + (1 - use_ensemble) * c_base
+            # t 的取值范围是 [0, 999]，在 800-200 步之间从 Ensemble 平滑过渡到 Base
+            t_max = 800
+            t_min = 200
+            
+            # 计算线性插值系数 alpha
+            alpha = (t.float() - t_min) / (t_max - t_min)
+            alpha = torch.clamp(alpha, 0.0, 1.0)
+            
+            # 扩展维度以匹配特征张量 [batch, 77, 768]
+            alpha = alpha.view(-1, 1, 1).to(c_ensemble.dtype)
+            
+            # 3. 语义融合 (Linear Blending)
+            cond_txt = alpha * c_ensemble + (1 - alpha) * c_base
         else:
             # 如果没有 c_base (例如无条件生成)，则直接使用 c_crossattn
             cond_txt = c_ensemble
 
+        # 4. 运行模型 (ControlNet + U-Net)
         if cond.get('c_concat') is None:
             eps = diffusion_model(x=x_noisy, timesteps=t, context=cond_txt, control=None, only_mid_control=self.only_mid_control)
         else:
