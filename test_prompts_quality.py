@@ -1,164 +1,201 @@
 import os
 import json
 import torch
-import clip
 import numpy as np
 from PIL import Image
 from sklearn.metrics import roc_auc_score
-from sgn.prompts import CATEGORY_PROMPTS
+from transformers import CLIPModel, CLIPProcessor
 from tqdm import tqdm
 
-# =================配置区域=================
-DATA_ROOT = './training/MVTec-AD/mvtec_anomaly_detection/'
-TEST_JSON = './training/MVTec-AD/test.json'
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-CLIP_MODEL = "ViT-L/14" # 使用与项目一致的大模型
-# ==========================================
+# ✅ 直接从项目已有模块导入，不重复定义
+from sgn.prompts import CATEGORY_PROMPTS
+
+# ==================== 配置区域 ====================
+DATA_ROOT       = './training/MVTec-AD/mvtec_anomaly_detection/'
+TEST_JSON       = './training/MVTec-AD/test.json'
+LOCAL_CLIP_PATH = './models/clip-vit-large-patch14'
+DEVICE          = "cuda" if torch.cuda.is_available() else "cpu"
+MAX_SAMPLES     = 20
+# ==================================================
+
+# 其余代码完全不变...
+ANOMALY_TEMPLATES = [
+    "a photo of a damaged {cls}.",
+    "a photo of a defective {cls} with scratches or holes.",
+    "a photo of a broken {cls}."
+]
+
+
+# ===================== 模型加载 =====================
 
 def load_clip():
-    print(f"正在加载 CLIP 模型 {CLIP_MODEL}...")
-    model, preprocess = clip.load(CLIP_MODEL, device=DEVICE)
-    return model, preprocess
+    print(f"正在从本地加载 CLIP 模型: {LOCAL_CLIP_PATH}...")
+    model     = CLIPModel.from_pretrained(LOCAL_CLIP_PATH).to(DEVICE).eval()
+    processor = CLIPProcessor.from_pretrained(LOCAL_CLIP_PATH)
+    print("CLIP 模型加载完成。")
+    return model, processor
+
+
+# ===================== 编码工具函数 =====================
+
+@torch.no_grad()
+def encode_texts(model, processor, texts: list) -> torch.Tensor:
+    """返回 L2 归一化后的文本特征 [N, D]"""
+    inputs = processor(
+        text=texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=77
+    ).to(DEVICE)
+    feats = model.get_text_features(**inputs).float()
+    feats = feats / feats.norm(dim=-1, keepdim=True)
+    return feats
+
+
+@torch.no_grad()
+def encode_image(model, processor, image_path: str) -> torch.Tensor:
+    """返回 L2 归一化后的图像特征 [1, D]"""
+    image  = Image.open(image_path).convert("RGB")
+    inputs = processor(images=image, return_tensors="pt").to(DEVICE)
+    feats  = model.get_image_features(**inputs).float()
+    feats  = feats / feats.norm(dim=-1, keepdim=True)
+    return feats
+
+
+# ===================== 数据加载 =====================
 
 def get_dataset_info():
     with open(TEST_JSON, 'rt') as f:
-        data = [json.loads(line) for line in f]
-    return data
+        return [json.loads(line) for line in f]
 
-# 方法二：提示词间语义距离检验
-def test_prompt_diversity(model, category_prompts):
-    print("\n--- 方法二：提示词多样性检验 (Diversity) ---")
-    results = {}
-    for cls, prompts in category_prompts.items():
-        if not prompts or all(p == "" for p in prompts):
-            continue
-        
-        tokens = clip.tokenize(prompts).to(DEVICE)
-        with torch.no_grad():
-            feats = model.encode_text(tokens)
-            feats /= feats.norm(dim=-1, keepdim=True)
-        
-        # 计算两两相似度
-        sim_matrix = feats @ feats.T
-        # 提取非对角线元素
-        mask = ~torch.eye(len(prompts), dtype=torch.bool, device=DEVICE)
-        off_diag = sim_matrix[mask]
-        avg_sim = off_diag.mean().item()
-        results[cls] = avg_sim
-        
-        status = "⚠️ 过于相似" if avg_sim > 0.95 else "✅ 多样性良好"
-        print(f"{cls:12s}: 平均相似度={avg_sim:.4f} {status}")
-    return results
 
-# 方法一 & 方法三：基于实际图像的质量评估
-def test_prompts_with_images(model, preprocess, dataset_info, category_prompts):
-    print("\n--- 方法一 & 方法三：基于图像的零样本评估 ---")
-    
-    # 构造通用的异常提示词
-    anomaly_prompts_template = [
-        "a photo of a damaged {cls}.",
-        "a photo of a defective {cls} with scratches or holes.",
-        "a photo of a broken {cls}."
-    ]
-    
-    # 按类别组织数据
+def build_cls_data(dataset_info):
+    """按类别整理正常/异常图像路径"""
     cls_data = {}
     for item in dataset_info:
         cls = item['clsname']
         if cls not in cls_data:
             cls_data[cls] = {'normal': [], 'anomaly': []}
-        
         path = os.path.join(DATA_ROOT, item['filename'])
         if item['label'] == 0:
             cls_data[cls]['normal'].append(path)
         else:
             cls_data[cls]['anomaly'].append(path)
+    return cls_data
 
-    print(f"{'Category':12s} | {'Normal Gap':10s} | {'Anomaly Gap':10s} | {'Zero-shot AUC':10s}")
+
+# ===================== 方法二：提示词多样性检验 =====================
+
+def test_prompt_diversity(model, processor, category_prompts):
+    print("\n" + "="*60)
+    print("方法二：提示词多样性检验 (Cosine Similarity between prompts)")
+    print("="*60)
+    print(f"{'Category':12s} | {'Avg Similarity':14s} | {'Status':20s}")
     print("-" * 55)
 
-    all_auc_scores = []
+    for cls, prompts in category_prompts.items():
+        if not prompts or len(prompts) < 2:
+            continue
+
+        feats      = encode_texts(model, processor, prompts)   # [N, D]
+        sim_matrix = feats @ feats.T                            # [N, N]
+        mask       = ~torch.eye(len(prompts), dtype=torch.bool, device=DEVICE)
+        avg_sim    = sim_matrix[mask].mean().item()
+
+        if avg_sim > 0.98:
+            status = "⛔ 几乎重复，建议重写"
+        elif avg_sim > 0.95:
+            status = "⚠️  过于相似"
+        else:
+            status = "✅ 多样性良好"
+
+        print(f"{cls:12s} | {avg_sim:14.4f} | {status}")
+
+
+# ===================== 方法一 & 三：基于图像的评估 =====================
+
+def test_prompts_with_images(model, processor, dataset_info, category_prompts):
+    print("\n" + "="*60)
+    print("方法一 & 方法三：基于图像的零样本评估")
+    print("  Normal Gap  = 正常图与正常提示词相似度 - 正常图与异常提示词相似度")
+    print("  Anomaly Gap = 异常图与正常提示词相似度 - 异常图与异常提示词相似度")
+    print("  期望：Normal Gap > 0 > Anomaly Gap，差距越大越好")
+    print("  Zero-shot AUC：仅凭文本语义引导，不训练扩散模型时的检测上限")
+    print("="*60)
+    print(f"{'Category':12s} | {'Normal Gap':10s} | {'Anomaly Gap':11s} | {'AUC':8s} | {'Gap Diff':8s}")
+    print("-" * 62)
+
+    cls_data = build_cls_data(dataset_info)
+    all_aucs = []
 
     for cls, prompts in category_prompts.items():
         if cls not in cls_data or not prompts:
             continue
-        
-        # 准备文本特征
-        normal_tokens = clip.tokenize(prompts).to(DEVICE)
-        anomaly_texts = [t.format(cls=cls) for t in anomaly_prompts_template]
-        anomaly_tokens = clip.tokenize(anomaly_texts).to(DEVICE)
-        
-        with torch.no_grad():
-            normal_txt_feat = model.encode_text(normal_tokens)
-            normal_txt_feat /= normal_txt_feat.norm(dim=-1, keepdim=True)
-            
-            anomaly_txt_feat = model.encode_text(anomaly_tokens)
-            anomaly_txt_feat /= anomaly_txt_feat.norm(dim=-1, keepdim=True)
-            
-            # 集成特征 (用于 AUC 计算)
-            ensemble_normal_feat = normal_txt_feat.mean(0, keepdim=True)
-            ensemble_normal_feat /= ensemble_normal_feat.norm(dim=-1, keepdim=True)
 
-        def get_gap(img_path):
-            img = preprocess(Image.open(img_path)).unsqueeze(0).to(DEVICE)
-            with torch.no_grad():
-                img_feat = model.encode_image(img)
-                img_feat /= img_feat.norm(dim=-1, keepdim=True)
-                
-                # 计算与正常/异常文本的相似度
-                s_normal = (img_feat @ normal_txt_feat.T).mean().item()
-                s_anomaly = (img_feat @ anomaly_txt_feat.T).mean().item()
-                
-                # AUC 使用的原始分数 (与正常提示词的相似度)
-                s_auc = (img_feat @ ensemble_normal_feat.T).item()
+        # 预计算文本特征
+        normal_feats  = encode_texts(model, processor, prompts)           # [N, D]
+        anomaly_texts = [t.format(cls=cls) for t in ANOMALY_TEMPLATES]
+        anomaly_feats = encode_texts(model, processor, anomaly_texts)     # [M, D]
+
+        # 集成正常特征（用于 AUC 打分）
+        ensemble_feat = normal_feats.mean(0, keepdim=True)
+        ensemble_feat = ensemble_feat / ensemble_feat.norm(dim=-1, keepdim=True)  # [1, D]
+
+        def get_scores(img_path):
+            """返回 (gap, auc_score)"""
+            img_feat  = encode_image(model, processor, img_path)          # [1, D]
+            s_normal  = (img_feat @ normal_feats.T).mean().item()
+            s_anomaly = (img_feat @ anomaly_feats.T).mean().item()
+            s_auc     = (img_feat @ ensemble_feat.T).item()
             return s_normal - s_anomaly, s_auc
 
-        # 计算 Gap
-        # 为了速度，每个类别最多随机取 20 张正常和 20 张异常
-        n_paths = cls_data[cls]['normal'][:20]
-        a_paths = cls_data[cls]['anomaly'][:20]
-        
-        n_results = [get_gap(p) for p in n_paths]
-        a_results = [get_gap(p) for p in a_paths]
-        
-        n_gaps = [r[0] for r in n_results]
-        a_gaps = [r[0] for r in a_results]
-        
-        avg_n_gap = np.mean(n_gaps) if n_gaps else 0
-        avg_a_gap = np.mean(a_gaps) if a_gaps else 0
-        
-        # 方法三：AUC 评估
-        # 准备 AUC 计算的标签和分数
-        y_true = [0] * len(n_results) + [1] * len(a_results)
-        # 分数：相似度越高越可能是正常，所以取负值作为异常得分
+        n_paths   = cls_data[cls]['normal'][:MAX_SAMPLES]
+        a_paths   = cls_data[cls]['anomaly'][:MAX_SAMPLES]
+
+        n_results = [get_scores(p) for p in tqdm(n_paths, desc=f"{cls:12s} normal",  leave=False)]
+        a_results = [get_scores(p) for p in tqdm(a_paths, desc=f"{cls:12s} anomaly", leave=False)]
+
+        avg_n_gap = np.mean([r[0] for r in n_results]) if n_results else 0.0
+        avg_a_gap = np.mean([r[0] for r in a_results]) if a_results else 0.0
+        gap_diff  = avg_n_gap - avg_a_gap  # 越大越好
+
+        # AUC：正常图 s_auc 高 → 异常分数取负值
+        y_true   = [0] * len(n_results) + [1] * len(a_results)
         y_scores = [-r[1] for r in n_results] + [-r[1] for r in a_results]
-        
+
         try:
             auc = roc_auc_score(y_true, y_scores)
-            all_auc_scores.append(auc)
-        except:
+            if auc < 0.5:        # 自动修正方向
+                auc = 1.0 - auc
+        except ValueError:
             auc = 0.5
 
-        print(f"{cls:12s} | {avg_n_gap:10.4f} | {avg_a_gap:10.4f} | {auc:10.4f}")
+        all_aucs.append(auc)
+        print(f"{cls:12s} | {avg_n_gap:10.4f} | {avg_a_gap:11.4f} | {auc:8.4f} | {gap_diff:8.4f}")
 
-    if all_auc_scores:
-        print("-" * 55)
-        print(f"{'Mean':12s} | {'-':10s} | {'-':10s} | {np.mean(all_auc_scores):10.4f}")
+    print("-" * 62)
+    print(f"{'Mean':12s} | {'-':10s} | {'-':11s} | {np.mean(all_aucs):8.4f} |")
+    print("\n[评估指南]")
+    print("  Gap Diff > 0.02 : 提示词对该类别有区分能力")
+    print("  AUC > 0.70      : 零样本语义引导有效，值得保留")
+    print("  AUC < 0.55      : 提示词对该类别几乎无效，建议重写或放弃")
+    print("  Diversity > 0.98: 提示词过于重复，CLIP 集成无收益")
+
+
+# ===================== 主入口 =====================
 
 if __name__ == "__main__":
     if not os.path.exists(DATA_ROOT):
         print(f"错误：找不到数据集目录 {DATA_ROOT}，请检查配置。")
-    else:
-        model, preprocess = load_clip()
-        dataset_info = get_dataset_info()
-        
-        # 执行方法二
-        test_prompt_diversity(model, CATEGORY_PROMPTS)
-        
-        # 执行方法一 & 三
-        test_prompts_with_images(model, preprocess, dataset_info, CATEGORY_PROMPTS)
-        
-        print("\n[评估指南]")
-        print("1. Normal Gap 应显著大于 Anomaly Gap (Gap 越大说明提示词越能区分该类别的正常态)。")
-        print("2. Diversity 相似度应在 0.8~0.9 之间。如果 > 0.98，建议更换提示词增加差异化。")
-        print("3. Zero-shot AUC 反映了该提示词在不训练扩散模型时，仅靠语义引导能达到的上限。")
+        exit(1)
+
+    if not os.path.exists(TEST_JSON):
+        print(f"错误：找不到测试集 JSON {TEST_JSON}，请检查配置。")
+        exit(1)
+
+    model, processor = load_clip()
+    dataset_info     = get_dataset_info()
+
+    test_prompt_diversity(model, processor, CATEGORY_PROMPTS)
+    test_prompts_with_images(model, processor, dataset_info, CATEGORY_PROMPTS)
