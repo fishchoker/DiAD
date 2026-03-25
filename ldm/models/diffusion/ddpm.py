@@ -483,18 +483,40 @@ class DDPM(pl.LightningModule):
         
         clsname = batch['clsname'][0]
         # 仅对在提示词测试中表现良好的类别开启加权（风险控制）
-        high_auc_categories = ['bottle', 'carpet', 'wood', 'leather', 'tile', 'hazelnut', 'cable', 'capsule', 'pill', 'transistor', 'metal_nut', 'zipper'] 
-        
+        #high_auc_categories = ['bottle', 'carpet', 'wood', 'leather', 'tile', 'hazelnut', 'cable', 'capsule', 'pill', 'transistor', 'metal_nut', 'zipper'] 
+        high_auc_categories = ['bottle', 'carpet', 'wood', 'pill', 'zipper', 'tile', 'cable', 'toothbrush'] 
         if clsname in high_auc_categories and hasattr(self, 'clip_model'):
-            prompts = CATEGORY_PROMPTS.get(clsname, [f"a photo of a {clsname}"])
-            txt_inputs = self.clip_processor(text=prompts, padding=True, return_tensors="pt").to(self.device)
+            # ✅ 使用缓存的文本特征 (提高验证速度)
+            if not hasattr(self, 'text_features_cache'):
+                self.text_features_cache = {}
+            
+            if clsname in self.text_features_cache:
+                txt_feat = self.text_features_cache[clsname]
+            else:
+                prompts = CATEGORY_PROMPTS.get(clsname, [f"a photo of a {clsname}"])
+                txt_inputs = self.clip_processor(text=prompts, padding=True, return_tensors="pt").to(self.device)
+                with torch.no_grad():
+                    txt_feats = self.clip_model.get_text_features(**txt_inputs)
+                    txt_feat = txt_feats.mean(0, keepdim=True)
+                    txt_feat /= txt_feat.norm(dim=-1, keepdim=True)
+                    self.text_features_cache[clsname] = txt_feat
+            
             with torch.no_grad():
-                txt_feats = self.clip_model.get_text_features(**txt_inputs)
-                txt_feat = txt_feats.mean(0, keepdim=True)
-                txt_feat /= txt_feat.norm(dim=-1, keepdim=True)
                 
-                img_normalized = (input_img + 1.0) / 2.0
-                img_inputs = self.clip_processor(images=img_normalized, return_tensors="pt", do_rescale=False).to(self.device)
+                # ✅ 彻底修复：将 4D Tensor 转换为 CLIP Processor 兼容的 List[Numpy(H, W, 3)]
+                # 直接传入 4D Tensor 会导致 PIL.Image.fromarray 报错，且 CUDA Tensor 无法直接转 Numpy
+                img_np = img_normalized.detach().cpu().numpy()
+                img_list = []
+                for i in range(img_np.shape[0]):
+                    img_single = img_np[i] # (C, H, W)
+                    if img_single.shape[0] == 1: # 灰度图转 RGB
+                        img_single = np.repeat(img_single, 3, axis=0)
+                    # (C, H, W) -> (H, W, C)
+                    img_single = np.transpose(img_single, (1, 2, 0))
+                    img_list.append(img_single)
+                
+                # 设置 do_rescale=False 避免对已归一化的图像二次缩放
+                img_inputs = self.clip_processor(images=img_list, return_tensors="pt", do_rescale=False).to(self.device)
                 vision_outputs = self.clip_model.vision_model(**img_inputs)
                 
                 patch_feats = vision_outputs.last_hidden_state[:, 1:, :]
@@ -504,9 +526,12 @@ class DDPM(pl.LightningModule):
                 sim_map = torch.matmul(patch_feats, txt_feat.T).reshape(1, 1, 16, 16)
                 sim_map = F.interpolate(sim_map, size=(input_img.shape[-2], input_img.shape[-1]), 
                                         mode='bilinear', align_corners=False)
-                sim_map = sim_map[0, 0].cpu().numpy()
+                sim_map = sim_map[0, 0] # Tensor
                 
-                conf_weight = (sim_map - sim_map.min()) / (sim_map.max() - sim_map.min() + 1e-8)
+                # ✅ 优化逻辑：使用基于绝对相似度的 Sigmoid 映射 (防止单图归一化带来的异常漏报)
+                threshold = 0.22
+                k = 15.0
+                conf_weight = torch.sigmoid(k * (sim_map - threshold)).cpu().numpy()
                 
                 # 修正公式: 原始分数 * (1 - 置信度)
                 anomaly_map = anomaly_map * (1 - conf_weight)

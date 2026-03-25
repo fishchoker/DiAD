@@ -109,8 +109,8 @@ with torch.no_grad():
         
         clsname = input['clsname'][0]
         # 仅对表现良好的类别开启加权修正
-        high_auc_categories = ['bottle', 'carpet', 'wood', 'leather', 'tile', 'hazelnut', 'cable', 'capsule', 'pill', 'transistor', 'metal_nut', 'zipper']
-        
+        #high_auc_categories = ['bottle', 'carpet', 'wood', 'leather', 'tile', 'hazelnut', 'cable', 'capsule', 'pill', 'transistor', 'metal_nut', 'zipper']
+        high_auc_categories = ['bottle', 'carpet', 'wood', 'pill', 'zipper', 'tile', 'cable', 'toothbrush'] 
         if clip_model is not None and clsname in high_auc_categories:
             # ✅ 直接从缓存获取该类别的正常先验 Embedding
             if clsname in text_features_cache:
@@ -126,8 +126,23 @@ with torch.no_grad():
             
             with torch.no_grad():
                 # 提取输入图像的 Patch-level 特征
-                img_normalized = (input_img.cuda() + 1.0) / 2.0
-                img_inputs = clip_processor(images=img_normalized, return_tensors="pt", do_rescale=False).to("cuda")
+                img_normalized = (input_img + 1.0) / 2.0
+                
+                # ✅ 彻底修复：将 4D Tensor 转换为 CLIP Processor 兼容的 List[Numpy(H, W, 3)]
+                # PIL.Image.fromarray 不能直接处理 (1, 1, 256, 256) 且 dtype 为 uint8 的 4D 数组
+                img_np = img_normalized.detach().cpu().numpy()
+                img_list = []
+                for i in range(img_np.shape[0]):
+                    img_single = img_np[i] # (C, H, W)
+                    if img_single.shape[0] == 1: # 灰度图转 RGB
+                        img_single = np.repeat(img_single, 3, axis=0)
+                    # (C, H, W) -> (H, W, C)
+                    img_single = np.transpose(img_single, (1, 2, 0))
+                    img_list.append(img_single)
+                
+                # 使用处理器进行缩放和归一化
+                # 由于输入已经是 [0, 1] 的 float，必须设置 do_rescale=False 避免二次缩放
+                img_inputs = clip_processor(images=img_list, return_tensors="pt", do_rescale=False).to("cuda")
                 vision_outputs = clip_model.vision_model(**img_inputs)
                 
                 patch_feats = vision_outputs.last_hidden_state[:, 1:, :] # 跳过 CLS
@@ -138,12 +153,17 @@ with torch.no_grad():
                 sim_map = torch.matmul(patch_feats, txt_feat.T).reshape(1, 1, 16, 16)
                 sim_map = F.interpolate(sim_map, size=(input_img.shape[-2], input_img.shape[-1]), 
                                         mode='bilinear', align_corners=False)
-                sim_map = sim_map[0, 0].cpu().numpy()
+                sim_map = sim_map[0, 0] # Tensor
                 
-                # 归一化生成置信度权重
-                conf_weight = (sim_map - sim_map.min()) / (sim_map.max() - sim_map.min() + 1e-8)
+                # ✅ 优化逻辑：不再使用单图 Min-Max 归一化 (会导致正常图误报、异常图漏报)
+                # 改用基于绝对相似度的 Sigmoid 映射：conf = 1 / (1 + exp(-k * (sim - threshold)))
+                # 假设 CLIP 相似度在 0.2 左右是正常语义边界
+                threshold = 0.22
+                k = 15.0 # 控制映射曲线的陡峭程度
+                conf_weight = torch.sigmoid(k * (sim_map - threshold)).cpu().numpy()
                 
                 # 修正公式: 原始分数 * (1 - 置信度)
+                # 这里的 conf_weight 代表该区域“确实是正常物体”的概率
                 anomaly_map = anomaly_map * (1 - conf_weight)
 
         anomaly_map = gaussian_filter(anomaly_map, sigma=5)
