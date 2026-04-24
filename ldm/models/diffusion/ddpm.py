@@ -486,25 +486,14 @@ class DDPM(pl.LightningModule):
         #high_auc_categories = ['bottle', 'carpet', 'wood', 'leather', 'tile', 'hazelnut', 'cable', 'capsule', 'pill', 'transistor', 'metal_nut', 'zipper'] 
         high_auc_categories = ['bottle', 'carpet', 'wood', 'pill', 'zipper', 'tile', 'cable', 'toothbrush'] 
         if clsname in high_auc_categories and hasattr(self, 'clip_model'):
-            # ✅ 使用缓存的文本特征 (提高验证速度)
-            if not hasattr(self, 'text_features_cache'):
-                self.text_features_cache = {}
-            
-            if clsname in self.text_features_cache:
-                txt_feat = self.text_features_cache[clsname]
-            else:
-                prompts = CATEGORY_PROMPTS.get(clsname, [f"a photo of a {clsname}"])
-                txt_inputs = self.clip_processor(text=prompts, padding=True, return_tensors="pt").to(self.device)
-                with torch.no_grad():
-                    txt_feats = self.clip_model.get_text_features(**txt_inputs)
-                    txt_feat = txt_feats.mean(0, keepdim=True)
-                    txt_feat /= txt_feat.norm(dim=-1, keepdim=True)
-                    self.text_features_cache[clsname] = txt_feat
-            
+            normal_feat  = self.text_features_cache[clsname]   # [1, D]
+            anomaly_feat = self.anomaly_features_cache[clsname] # [1, D]
+
             with torch.no_grad():
                 
                 # ✅ 彻底修复：将 4D Tensor 转换为 CLIP Processor 兼容的 List[Numpy(H, W, 3)]
                 # 直接传入 4D Tensor 会导致 PIL.Image.fromarray 报错，且 CUDA Tensor 无法直接转 Numpy
+                img_normalized = (input_img + 1.0) / 2.0
                 img_np = img_normalized.detach().cpu().numpy()
                 img_list = []
                 for i in range(img_np.shape[0]):
@@ -519,22 +508,34 @@ class DDPM(pl.LightningModule):
                 img_inputs = self.clip_processor(images=img_list, return_tensors="pt", do_rescale=False).to(self.device)
                 vision_outputs = self.clip_model.vision_model(**img_inputs)
                 
-                patch_feats = vision_outputs.last_hidden_state[:, 1:, :]
-                patch_feats = self.clip_model.visual_projection(patch_feats)
+                # patch-level 特征
+                patch_feats = vision_outputs.last_hidden_state[:, 1:, :] # [1, 256, 1024]
+                patch_feats = self.clip_model.visual_projection(patch_feats) # [1, 256, 768]
                 patch_feats /= patch_feats.norm(dim=-1, keepdim=True)
                 
-                sim_map = torch.matmul(patch_feats, txt_feat.T).reshape(1, 1, 16, 16)
-                sim_map = F.interpolate(sim_map, size=(input_img.shape[-2], input_img.shape[-1]), 
-                                        mode='bilinear', align_corners=False)
-                sim_map = sim_map[0, 0] # Tensor
+                # ✅ 双向相似度
+                sim_normal  = torch.matmul(patch_feats, normal_feat.T).reshape(1, 1, 16, 16)
+                sim_anomaly = torch.matmul(patch_feats, anomaly_feat.T).reshape(1, 1, 16, 16)
                 
-                # ✅ 优化逻辑：使用基于绝对相似度的 Sigmoid 映射 (防止单图归一化带来的异常漏报)
-                threshold = 0.22
-                k = 15.0
-                conf_weight = torch.sigmoid(k * (sim_map - threshold)).cpu().numpy()
+                # ✅ 上采样到原图尺寸
+                H, W = input_img.shape[-2], input_img.shape[-1]
+                sim_normal  = F.interpolate(sim_normal,  size=(H, W), mode='bilinear', align_corners=False)[0, 0]
+                sim_anomaly = F.interpolate(sim_anomaly, size=(H, W), mode='bilinear', align_corners=False)[0, 0]
                 
-                # 修正公式: 原始分数 * (1 - 置信度)
-                anomaly_map = anomaly_map * (1 - conf_weight)
+                # ✅ 双向对比：只有当 S_normal >> S_anomaly 时才抑制
+                # contrast > 0：该区域更像正常 → 应该抑制
+                # contrast ≤ 0：该区域更像异常或模糊 → 保留原分数
+                contrast = sim_normal - sim_anomaly  # [-1, 1]
+                
+                # 用 sigmoid 将对比度映射到抑制权重
+                # contrast > 0 → suppress_weight > 0.5 → 抑制
+                # contrast ≤ 0 → suppress_weight ≤ 0.5 → 几乎不抑制
+                k = 10.0
+                suppress_weight = torch.sigmoid(contrast * k).cpu().numpy()
+                
+                # ✅ 修正公式：只抑制"明确正常"的区域
+                # 保守版：最多抑制 60%
+                anomaly_map = anomaly_map * (1.0 - suppress_weight * 0.6)
         
         # --- 源代码 ---
         # anomaly_map = gaussian_filter(anomaly_map, sigma=5)
@@ -563,6 +564,36 @@ class DDPM(pl.LightningModule):
             self.clip_model = CLIPModel.from_pretrained(clip_path).cuda()
             self.clip_processor = CLIPProcessor.from_pretrained(clip_path)
             self.clip_model.eval()
+
+            # ✅ 预计算所有类别的正向和负向文本特征
+            self.print("Pre-computing CLIP text embeddings for all categories...")
+            self.text_features_cache = {}
+            self.anomaly_features_cache = {}
+
+            ANOMALY_TEMPLATES = [
+                "a photo of a damaged {cls}.",
+                "a photo of a defective {cls} with scratches or holes.",
+                "a photo of a broken {cls}."
+            ]
+
+            with torch.no_grad():
+                for clsname, prompts in CATEGORY_PROMPTS.items():
+                    # 正常先验
+                    txt_inputs = self.clip_processor(text=prompts, padding=True, return_tensors="pt").to(self.device)
+                    txt_feats = self.clip_model.get_text_features(**txt_inputs)
+                    txt_feat = txt_feats.mean(0, keepdim=True)
+                    txt_feat /= txt_feat.norm(dim=-1, keepdim=True)
+                    self.text_features_cache[clsname] = txt_feat
+
+                    # 异常提示词
+                    anomaly_prompts = [t.format(cls=clsname) for t in ANOMALY_TEMPLATES]
+                    ano_inputs = self.clip_processor(text=anomaly_prompts, padding=True, return_tensors="pt").to(self.device)
+                    ano_feats = self.clip_model.get_text_features(**ano_inputs)
+                    ano_feat = ano_feats.mean(0, keepdim=True)
+                    ano_feat /= ano_feat.norm(dim=-1, keepdim=True)
+                    self.anomaly_features_cache[clsname] = ano_feat
+            
+            self.print("Pre-computation done.")
         
         os.makedirs(self.evl_dir, exist_ok=True)
 

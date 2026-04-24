@@ -132,3 +132,95 @@ CATEGORY_PROMPTS = {
         "a cropped photo of the zipper without flaw."
     ],
 }
+
+ANOMALY_PROMPTS = {
+    'bottle': [
+        "a close-up photo of a bottle with cracks on the surface.",
+        "a photo of a bottle with broken edges or chipped parts.",
+        "a photo of a bottle with stains, contamination, or dirt."
+    ],
+
+    'cable': [
+        "a close-up photo of a cable with cuts or damaged insulation.",
+        "a photo of a cable with bent, exposed, or broken wires.",
+        "a photo of a cable with twisted shape or missing parts."
+    ],
+
+    'capsule': [
+        "a close-up photo of a capsule with cracks or scratches.",
+        "a close-up photo of a capsule with wrong color or stains.",
+        "a close-up photo of a capsule with deformed shape or missing print."
+    ],
+
+    'carpet': [
+        "a close-up photo of a carpet with holes or cuts.",
+        "a photo of a carpet with stains or discoloration.",
+        "a photo of a carpet with torn fibers or damaged texture."
+    ],
+
+    'grid': [
+        "a close-up photo of a grid with broken or missing lines.",
+        "a close-up photo of a grid with bent mesh pattern.",
+        "a close-up photo of a grid with irregular spacing or distorted structure."
+    ],
+
+    'hazelnut': [
+        "a close-up photo of a hazelnut with cracks or holes.",
+        "a close-up photo of a hazelnut with scratches or cuts.",
+        "a photo of a hazelnut with damaged shell or surface stains."
+    ],
+
+    'leather': [
+        "a close-up photo of leather with cuts or scratches.",
+        "a close-up photo of leather with wrinkles or surface cracks.",
+        "a close-up photo of leather with stains or uneven texture."
+    ],
+
+    'metal_nut': [
+        "a close-up photo of a metal nut with scratches or dents.",
+        "a photo of a metal nut with deformed shape or bent edges.",
+        "a photo of a metal nut with rust, contamination, or flipped orientation."
+    ],
+
+    'pill': [
+        "a close-up photo of a pill with cracks or chipped parts.",
+        "a photo of a pill with wrong color or contamination.",
+        "a photo of a pill with broken shape or missing pieces."
+    ],
+
+    'screw': [
+        "a close-up photo of a screw with damaged or missing threading.",
+        "a photo of a screw with scratches, rust, or dents.",
+        "a photo of a screw with broken head or bent shape."
+    ],
+
+    'tile': [
+        "a close-up photo of a tile with cracks or chipped edges.",
+        "a close-up photo of a tile with stains or discoloration.",
+        "a close-up photo of a tile with rough surface or glue residue."
+    ],
+
+    'toothbrush': [
+        "a photo of a toothbrush with bent or missing bristles.",
+        "a photo of a toothbrush with broken handle or damaged head.",
+        "a close-up photo of a toothbrush with stains or visible defects."
+    ],
+
+    'transistor': [
+        "a photo of a transistor with bent or broken leads.",
+        "a photo of a transistor with missing or misplaced components.",
+        "a close-up photo of a transistor with damaged surface or defects."
+    ],
+
+    'wood': [
+        "a close-up photo of a wood surface with cracks or holes.",
+        "a photo of a wood surface with scratches or dents.",
+        "a photo of a wood surface with stains, liquid marks, or discoloration."
+    ],
+
+    'zipper': [
+        "a close-up photo of a zipper with broken or missing teeth.",
+        "a photo of a zipper with torn fabric or split edges.",
+        "a photo of a zipper with bent teeth or damaged structure."
+    ],
+}
