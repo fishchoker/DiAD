@@ -56,6 +56,20 @@ pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=
 pretrained_model = pretrained_model.cuda()
 pretrained_model.eval()
 
+# 加载 DINO 模型用于显著性检测（从本地 models 文件夹加载权重）
+dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vits8', pretrained=False)
+dino_path = './models/dino_vits8.pth'
+if os.path.exists(dino_path):
+    dino_model.load_state_dict(torch.load(dino_path, map_location='cpu'))
+    print(f"Successfully loaded DINO weights from {dino_path}")
+else:
+    # 如果本地 models 文件夹下没有，则通过 torch.hub 下载并自动保存
+    dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vits8', pretrained=True)
+    os.makedirs(os.path.dirname(dino_path), exist_ok=True)
+    torch.save(dino_model.state_dict(), dino_path)
+    print(f"DINO weights downloaded and saved to {dino_path}")
+dino_model = dino_model.cuda().eval()
+
 model.eval()
 os.makedirs(evl_dir, exist_ok=True)
 with torch.no_grad():
@@ -73,6 +87,41 @@ with torch.no_grad():
 
         # Calculate the anomaly score
         anomaly_map, _ = cal_anomaly_map(input_features, output_features, input_img.shape[-1], amap_mode='a')
+
+        # DINO 提取 attention map 作为显著性图
+        img_for_dino = F.interpolate(input_img, size=(224, 224), mode='bilinear')
+        # 获取最后一层的 self-attention
+        attentions = dino_model.get_last_selfattention(img_for_dino.cuda())
+        # attentions: [1, num_heads, num_patches+1, num_patches+1]
+
+        # 取 CLS token 对所有 patch 的注意力，平均多个头
+        nh = attentions.shape[1]
+        attentions = attentions[0, :, 0, 1:]  # [num_heads, num_patches]
+        attentions = attentions.mean(0)       # [num_patches]
+
+        # reshape 到空间图
+        patch_size = 8  # dino_vits8
+        h = w = 224 // patch_size  # 28×28
+        saliency_map = attentions.reshape(h, w).unsqueeze(0).unsqueeze(0)
+
+        # 上采样到原图尺寸
+        saliency_map = F.interpolate(
+            saliency_map,
+            size=(input_img.shape[-2], input_img.shape[-1]),
+            mode='bilinear', align_corners=False
+        )
+        saliency_map = saliency_map[0, 0].cpu().numpy()
+
+        # 归一化到 [0, 1]
+        saliency_map = (saliency_map - saliency_map.min()) / \
+                       (saliency_map.max() - saliency_map.min() + 1e-8)
+
+        # 生成前景权重（软mask，保留部分背景避免过度抹除）
+        foreground_weight = 0.2 + 0.8 * saliency_map  # 背景保留20%，前景保留100%
+
+        # 加权异常分数
+        anomaly_map = anomaly_map * foreground_weight
+
         anomaly_map = gaussian_filter(anomaly_map, sigma=5)
         anomaly_map = torch.from_numpy(anomaly_map)
         anomaly_map_prediction = anomaly_map.unsqueeze(dim=0).unsqueeze(dim=1)
