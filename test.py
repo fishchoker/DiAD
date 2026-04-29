@@ -23,19 +23,11 @@ import cv2
 from utils.util import cal_anomaly_map, log_local, create_logger, setup_seed
 from visa_dataloader import VisaDataset
 
-import importlib.util
-import pathlib
-
-dino_dir = pathlib.Path("./models/dino/dino-main")
-vt_path = dino_dir / "vision_transformer.py"
-
-spec = importlib.util.spec_from_file_location(
-    "dino_vision_transformer",
-    vt_path
-)
-
-vits = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(vits)
+# 参考 ldm/sgn 目录即包的导入方式
+try:
+    import dino.vision_transformer as vits
+except ImportError:
+    print("Warning: 'dino' package not found in root. Please ensure 'dino' folder exists in project root.")
 
 parser = argparse.ArgumentParser(description="DiAD")
 parser.add_argument("--resume_path", default='./models/diad.ckpt')
