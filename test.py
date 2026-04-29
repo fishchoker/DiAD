@@ -23,6 +23,20 @@ import cv2
 from utils.util import cal_anomaly_map, log_local, create_logger, setup_seed
 from visa_dataloader import VisaDataset
 
+import importlib.util
+import pathlib
+
+dino_dir = pathlib.Path("./models/dino/dino-main")
+vt_path = dino_dir / "vision_transformer.py"
+
+spec = importlib.util.spec_from_file_location(
+    "dino_vision_transformer",
+    vt_path
+)
+
+vits = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vits)
+
 parser = argparse.ArgumentParser(description="DiAD")
 parser.add_argument("--resume_path", default='./models/diad.ckpt')
 
@@ -46,7 +60,7 @@ model.learning_rate = learning_rate
 model.only_mid_control = only_mid_control
 
 # Misc
-data_path = '/root/autodl-tmp/mvtecad/'
+data_path = './training/MVTec-AD/mvtec_anomaly_detection/'
 dataset = MVTecDataset('test', data_path)
 # test_dataset = VisaDataset('test', data_path)
 
@@ -56,16 +70,17 @@ pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=
 pretrained_model = pretrained_model.cuda()
 pretrained_model.eval()
 
-# 加载 DINO 模型用于显著性检测（从本地 models 文件夹加载权重，完全离线）
+# 加载 DINO 模型用于显著性检测（使用本地 dino 源码 + 本地权重）
 dino_path = './models/dino_vits8.pth'
-dino_model = timm.create_model('vit_small_patch8_224', pretrained=False, num_classes=0)
+dino_model = vits.vit_small(patch_size=8)
 if os.path.exists(dino_path):
-    dino_model.load_state_dict(torch.load(dino_path, map_location='cpu'))
+    state_dict = torch.load(dino_path, map_location='cpu')
+    dino_model.load_state_dict(state_dict, strict=False)
     print(f"Successfully loaded DINO weights from {dino_path}")
 else:
     raise FileNotFoundError(
         f"DINO weights not found at '{dino_path}'.\n"
-        f"Please download manually from:\n"
+        f"Please download from:\n"
         f"https://dl.fbaipublicfiles.com/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth\n"
         f"and place it at '{dino_path}'."
     )
