@@ -24,7 +24,7 @@ from utils.util import cal_anomaly_map, log_local, create_logger, setup_seed
 from visa_dataloader import VisaDataset
 
 parser = argparse.ArgumentParser(description="DiAD")
-parser.add_argument("--resume_path", default='./models/output.ckpt')
+parser.add_argument("--resume_path", default='./models/diad.ckpt')
 
 
 args = parser.parse_args()
@@ -51,23 +51,24 @@ dataset = MVTecDataset('test', data_path)
 # test_dataset = VisaDataset('test', data_path)
 
 
-dataloader = DataLoader(dataset, num_workers=8, batch_size=batch_size, shuffle=True)
+dataloader = DataLoader(dataset, num_workers=3, batch_size=batch_size, shuffle=True)
 pretrained_model = timm.create_model("resnet50", pretrained=True, features_only=True)
 pretrained_model = pretrained_model.cuda()
 pretrained_model.eval()
 
-# 加载 DINO 模型用于显著性检测（从本地 models 文件夹加载权重）
-dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vits8', pretrained=False)
+# 加载 DINO 模型用于显著性检测（从本地 models 文件夹加载权重，完全离线）
 dino_path = './models/dino_vits8.pth'
+dino_model = timm.create_model('vit_small_patch8_224', pretrained=False, num_classes=0)
 if os.path.exists(dino_path):
     dino_model.load_state_dict(torch.load(dino_path, map_location='cpu'))
     print(f"Successfully loaded DINO weights from {dino_path}")
 else:
-    # 如果本地 models 文件夹下没有，则通过 torch.hub 下载并自动保存
-    dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vits8', pretrained=True)
-    os.makedirs(os.path.dirname(dino_path), exist_ok=True)
-    torch.save(dino_model.state_dict(), dino_path)
-    print(f"DINO weights downloaded and saved to {dino_path}")
+    raise FileNotFoundError(
+        f"DINO weights not found at '{dino_path}'.\n"
+        f"Please download manually from:\n"
+        f"https://dl.fbaipublicfiles.com/dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth\n"
+        f"and place it at '{dino_path}'."
+    )
 dino_model = dino_model.cuda().eval()
 
 model.eval()
