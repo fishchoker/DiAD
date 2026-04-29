@@ -24,10 +24,7 @@ from utils.util import cal_anomaly_map, log_local, create_logger, setup_seed
 from visa_dataloader import VisaDataset
 
 # 参考 ldm/sgn 目录即包的导入方式
-try:
-    import dino.vision_transformer as vits
-except ImportError:
-    print("Warning: 'dino' package not found in root. Please ensure 'dino' folder exists in project root.")
+import dino.vision_transformer as vits
 
 parser = argparse.ArgumentParser(description="DiAD")
 parser.add_argument("--resume_path", default='./models/diad.ckpt')
