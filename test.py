@@ -149,6 +149,8 @@ with torch.no_grad():
         model = model.cuda()
         output= model.log_images_test(input)
         images = output
+        # 加载分值到字典中
+        output['saliency'] = saliency_map
         log_local(images, input["filename"][0])
         output_img = images['samples']
         output_features = pretrained_model(output_img.cuda())
@@ -211,7 +213,15 @@ with torch.no_grad():
         pred_feature = Image.fromarray(pred_feature, mode='L')
         pred_feature.save(path_feature)
 
-        #Heatmap
+        # Heatmap
+        # 保存 Saliency Map 可视化图
+        saliency_vis = saliency_map[0, 0].detach().cpu().numpy()
+        # 归一化到 0-255
+        saliency_vis = (saliency_vis - saliency_vis.min()) / (saliency_vis.max() - saliency_vis.min() + 1e-8)
+        saliency_vis = (saliency_vis * 255).astype(np.uint8)
+        saliency_name = "{}-saliency.png".format(name)
+        cv2.imwrite(root + input["filename"][0][:-7] + saliency_name, saliency_vis)
+
         anomaly_map_new = np.round(255 * (anomaly_map - anomaly_map.min()) / (anomaly_map.max() - anomaly_map.min()))
         anomaly_map_new = anomaly_map_new.cpu().numpy().astype(np.uint8)
         heatmap = cv2.applyColorMap(anomaly_map_new, colormap=cv2.COLORMAP_JET)
