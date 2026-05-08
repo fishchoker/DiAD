@@ -26,6 +26,71 @@ from visa_dataloader import VisaDataset
 # 参考 ldm/sgn 目录即包的导入方式
 import dino.vision_transformer as vits
 
+def get_all_layer_attentions(model, x):
+    """
+    通过 forward hook 收集 ViT 所有层的注意力矩阵。
+    """
+    all_attentions = []
+    hooks = []
+
+    def attn_hook(module, input, output):
+        # DINO Attention.forward 返回 (x, attn)
+        if isinstance(output, tuple):
+            attn = output[1]   # [1, num_heads, N+1, N+1]
+            all_attentions.append(attn.detach())
+
+    for block in model.blocks:
+        h = block.attn.register_forward_hook(attn_hook)
+        hooks.append(h)
+
+    with torch.no_grad():
+        _ = model(x)
+
+    for h in hooks:
+        h.remove()
+
+    return all_attentions
+
+def attention_rollout(all_attentions, discard_ratio=0.9, head_fusion='mean'):
+    """
+    计算 Attention Rollout 显著性图。
+    """
+    num_patches = all_attentions[0].shape[-1] - 1  # 去掉 CLS token
+    result = torch.eye(num_patches + 1).to(all_attentions[0].device)
+
+    for attn in all_attentions:
+        attn = attn[0]  # [num_heads, N+1, N+1]
+
+        # 多头融合
+        if head_fusion == 'mean':
+            attn_fused = attn.mean(0)   # [N+1, N+1]
+        elif head_fusion == 'max':
+            attn_fused = attn.max(0).values
+        elif head_fusion == 'min':
+            attn_fused = attn.min(0).values
+        else:
+            raise ValueError(f"Unknown head_fusion: {head_fusion}")
+
+        # 丢弃低注意力值（降噪）
+        flat = attn_fused.flatten()
+        threshold_val = torch.quantile(flat, discard_ratio)
+        attn_fused[attn_fused < threshold_val] = 0.0
+
+        # 残差连接：A_tilde = 0.5 * A + 0.5 * I
+        identity = torch.eye(attn_fused.shape[0]).to(attn_fused.device)
+        attn_tilde = 0.5 * attn_fused + 0.5 * identity
+
+        # 每行重新归一化
+        row_sum = attn_tilde.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        attn_tilde = attn_tilde / row_sum
+
+        # 跨层连乘累积
+        result = torch.matmul(attn_tilde, result)
+
+    # 取 CLS token（第0行）对所有 patch token（第1列以后）的注意力
+    saliency = result[0, 1:]  # [num_patches]
+    return saliency.cpu().numpy()
+
 parser = argparse.ArgumentParser(description="DiAD")
 parser.add_argument("--resume_path", default='./models/diad.ckpt')
 
@@ -93,21 +158,26 @@ with torch.no_grad():
         # Calculate the anomaly score
         anomaly_map, _ = cal_anomaly_map(input_features, output_features, input_img.shape[-1], amap_mode='a')
 
-        # DINO 提取 attention map 作为显著性图
+        # DINO 提取逻辑：使用 Attention Rollout 获得更精细的显著性图
         img_for_dino = F.interpolate(input_img, size=(224, 224), mode='bilinear')
-        # 获取最后一层的 self-attention
-        attentions = dino_model.get_last_selfattention(img_for_dino.cuda())
-        # attentions: [1, num_heads, num_patches+1, num_patches+1]
-
-        # 取 CLS token 对所有 patch 的注意力，平均多个头
-        nh = attentions.shape[1]
-        attentions = attentions[0, :, 0, 1:]  # [num_heads, num_patches]
-        attentions = attentions.mean(0)       # [num_patches]
+        
+        # 1. 收集所有层的注意力矩阵
+        all_layer_attentions = get_all_layer_attentions(dino_model, img_for_dino.cuda())
+        
+        # 2. 计算 Attention Rollout (discard_ratio=0.9 用于降噪)
+        if all_layer_attentions:
+            attentions_rollout = attention_rollout(all_layer_attentions, discard_ratio=0.9, head_fusion='mean')
+        else:
+            # Fallback: 如果 Hook 没拿到数据，退回到原来的最后一层均值方案
+            print("Warning: Hook failed to capture attentions, falling back to last layer mean.")
+            last_attn = dino_model.get_last_selfattention(img_for_dino.cuda())
+            attentions_rollout = last_attn[0, :, 0, 1:].mean(0).cpu().numpy()
 
         # reshape 到空间图
         patch_size = 8  # dino_vits8
         h = w = 224 // patch_size  # 28×28
-        saliency_map = attentions.reshape(h, w).unsqueeze(0).unsqueeze(0)
+        saliency_map = attentions_rollout.reshape(h, w)
+        saliency_map = torch.from_numpy(saliency_map).unsqueeze(0).unsqueeze(0)
 
         # 上采样到原图尺寸
         saliency_map = F.interpolate(
