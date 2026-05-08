@@ -1,4 +1,5 @@
 import random
+import math
 
 import torchmetrics
 
@@ -51,44 +52,39 @@ def get_all_layer_attentions(model, x):
 
     return all_attentions
 
-def attention_rollout(all_attentions, discard_ratio=0.9, head_fusion='mean'):
+def attention_rollout(all_attentions, discard_ratio=0.1, head_fusion='mean'):
     """
-    计算 Attention Rollout 显著性图。
+    优化版 Attention Rollout：
+    1. 支持只传入部分层。
+    2. 使用 A + I 增强当前层信号。
     """
-    num_patches = all_attentions[0].shape[-1] - 1  # 去掉 CLS token
-    result = torch.eye(num_patches + 1).to(all_attentions[0].device)
+    num_tokens = all_attentions[0].shape[-1]
+    result = torch.eye(num_tokens).to(all_attentions[0].device)
 
     for attn in all_attentions:
-        attn = attn[0]  # [num_heads, N+1, N+1]
-
-        # 多头融合
+        attn = attn[0]
         if head_fusion == 'mean':
-            attn_fused = attn.mean(0)   # [N+1, N+1]
-        elif head_fusion == 'max':
-            attn_fused = attn.max(0).values
-        elif head_fusion == 'min':
-            attn_fused = attn.min(0).values
+            attn_fused = attn.mean(0)
         else:
-            raise ValueError(f"Unknown head_fusion: {head_fusion}")
+            attn_fused = attn.max(0).values
 
-        # 丢弃低注意力值（降噪）
-        flat = attn_fused.flatten()
-        threshold_val = torch.quantile(flat, discard_ratio)
-        attn_fused[attn_fused < threshold_val] = 0.0
+        # 1. 行内去噪 (Top-K 策略比全局 Quantile 更稳定)
+        if discard_ratio > 0:
+            limit = attn_fused.size(-1)
+            v, i = torch.topk(attn_fused, int(limit * (1 - discard_ratio)))
+            mask = torch.zeros_like(attn_fused).scatter_(-1, i, 1.0)
+            attn_fused = attn_fused * mask
 
-        # 残差连接：A_tilde = 0.5 * A + 0.5 * I
-        identity = torch.eye(attn_fused.shape[0]).to(attn_fused.device)
-        attn_tilde = 0.5 * attn_fused + 0.5 * identity
+        # 2. A + I 逻辑：赋予当前层注意力更高的权重，减少过平滑
+        identity = torch.eye(num_tokens).to(attn_fused.device)
+        # 直接相加，不进行 0.5 预缩放
+        attn_tilde = attn_fused + identity
+        # 必须进行行归一化，保证矩阵乘法的稳定性
+        attn_tilde = attn_tilde / attn_tilde.sum(dim=-1, keepdim=True)
 
-        # 每行重新归一化
-        row_sum = attn_tilde.sum(dim=-1, keepdim=True).clamp(min=1e-8)
-        attn_tilde = attn_tilde / row_sum
-
-        # 跨层连乘累积
         result = torch.matmul(attn_tilde, result)
 
-    # 取 CLS token（第0行）对所有 patch token（第1列以后）的注意力
-    saliency = result[0, 1:]  # [num_patches]
+    saliency = result[0, 1:]
     return saliency.cpu().numpy()
 
 parser = argparse.ArgumentParser(description="DiAD")
@@ -149,9 +145,6 @@ with torch.no_grad():
         model = model.cuda()
         output= model.log_images_test(input)
         images = output
-        # 加载分值到字典中
-        output['saliency'] = saliency_map
-        log_local(images, input["filename"][0])
         output_img = images['samples']
         output_features = pretrained_model(output_img.cuda())
         input_features = input_features[1:4]
@@ -166,9 +159,11 @@ with torch.no_grad():
         # 1. 收集所有层的注意力矩阵
         all_layer_attentions = get_all_layer_attentions(dino_model, img_for_dino.cuda())
         
-        # 2. 计算 Attention Rollout (discard_ratio=0.9 用于降噪)
+        # 2. 计算 Attention Rollout (优化：只使用最后 4 层，降低 discard_ratio)
         if all_layer_attentions:
-            attentions_rollout = attention_rollout(all_layer_attentions, discard_ratio=0.9, head_fusion='mean')
+            # 只取最后 4 层 [8, 9, 10, 11]
+            last_4_layers = all_layer_attentions[-4:]
+            attentions_rollout = attention_rollout(last_4_layers, discard_ratio=0.1, head_fusion='mean')
         else:
             # Fallback: 如果 Hook 没拿到数据，退回到原来的最后一层均值方案
             print("Warning: Hook failed to capture attentions, falling back to last layer mean.")
@@ -196,6 +191,11 @@ with torch.no_grad():
         # 生成前景权重（软mask，保留部分背景避免过度抹除）
         foreground_weight = 0.2 + 0.8 * saliency_map  # 背景保留20%，前景保留100%
 
+        # 将 saliency 存入 images 字典，以便 log_local 统一处理（如果需要的话）
+        # 这里我们手动保存可视化图，所以只需确保 log_local 运行在变量定义后
+        # images['saliency'] = torch.from_numpy(saliency_map).unsqueeze(0).unsqueeze(0) # 移除此处，避免 log_local 报错
+        log_local(images, input["filename"][0])
+
         # 加权异常分数
         anomaly_map = anomaly_map * foreground_weight
 
@@ -215,9 +215,8 @@ with torch.no_grad():
 
         # Heatmap
         # 保存 Saliency Map 可视化图
-        saliency_vis = saliency_map[0, 0].detach().cpu().numpy()
-        # 归一化到 0-255
-        saliency_vis = (saliency_vis - saliency_vis.min()) / (saliency_vis.max() - saliency_vis.min() + 1e-8)
+        # 此时 saliency_map 已经是 2D numpy array
+        saliency_vis = (saliency_map - saliency_map.min()) / (saliency_map.max() - saliency_map.min() + 1e-8)
         saliency_vis = (saliency_vis * 255).astype(np.uint8)
         saliency_name = "{}-saliency.png".format(name)
         cv2.imwrite(root + input["filename"][0][:-7] + saliency_name, saliency_vis)
