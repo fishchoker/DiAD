@@ -52,39 +52,53 @@ def get_all_layer_attentions(model, x):
 
     return all_attentions
 
-def attention_rollout(all_attentions, discard_ratio=0.1, head_fusion='mean'):
+def attention_rollout(all_attentions, discard_ratio=0.9, head_fusion='mean'):
     """
-    优化版 Attention Rollout：
-    1. 支持只传入部分层。
-    2. 使用 A + I 增强当前层信号。
+    计算 Attention Rollout 显著性图。
+
+    Args:
+        all_attentions: list of [1, num_heads, N+1, N+1]，所有层的注意力矩阵
+        discard_ratio:  每层保留的最强注意力比例，其余置零（降噪）
+                        0.9 表示丢弃每行中最小的 90% 的值
+        head_fusion:    多头融合方式，'mean' / 'max' / 'min'
+
+    Returns:
+        saliency: numpy array [num_patches]，CLS token 对各 patch 的注意力分布
     """
-    num_tokens = all_attentions[0].shape[-1]
-    result = torch.eye(num_tokens).to(all_attentions[0].device)
+    num_patches = all_attentions[0].shape[-1] - 1  # 去掉 CLS token
+    result = torch.eye(num_patches + 1).to(all_attentions[0].device)
 
     for attn in all_attentions:
-        attn = attn[0]
+        attn = attn[0]  # [num_heads, N+1, N+1]
+
+        # 多头融合
         if head_fusion == 'mean':
-            attn_fused = attn.mean(0)
-        else:
+            attn_fused = attn.mean(0)   # [N+1, N+1]
+        elif head_fusion == 'max':
             attn_fused = attn.max(0).values
+        elif head_fusion == 'min':
+            attn_fused = attn.min(0).values
+        else:
+            raise ValueError(f"Unknown head_fusion: {head_fusion}")
 
-        # 1. 行内去噪 (Top-K 策略比全局 Quantile 更稳定)
-        if discard_ratio > 0:
-            limit = attn_fused.size(-1)
-            v, i = torch.topk(attn_fused, int(limit * (1 - discard_ratio)))
-            mask = torch.zeros_like(attn_fused).scatter_(-1, i, 1.0)
-            attn_fused = attn_fused * mask
+        # 丢弃低注意力值（降噪）
+        flat = attn_fused.flatten()
+        threshold_val = torch.quantile(flat, discard_ratio)
+        attn_fused[attn_fused < threshold_val] = 0.0
 
-        # 2. A + I 逻辑：赋予当前层注意力更高的权重，减少过平滑
-        identity = torch.eye(num_tokens).to(attn_fused.device)
-        # 直接相加，不进行 0.5 预缩放
-        attn_tilde = attn_fused + identity
-        # 必须进行行归一化，保证矩阵乘法的稳定性
-        attn_tilde = attn_tilde / attn_tilde.sum(dim=-1, keepdim=True)
+        # 残差连接：A_tilde = 0.5 * A + 0.5 * I
+        identity = torch.eye(attn_fused.shape[0]).to(attn_fused.device)
+        attn_tilde = 0.5 * attn_fused + 0.5 * identity
 
+        # 每行重新归一化
+        row_sum = attn_tilde.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        attn_tilde = attn_tilde / row_sum
+
+        # 跨层连乘累积
         result = torch.matmul(attn_tilde, result)
 
-    saliency = result[0, 1:]
+    # 取 CLS token（第0行）对所有 patch token（第1列以后）的注意力
+    saliency = result[0, 1:]  # [num_patches]
     return saliency.cpu().numpy()
 
 parser = argparse.ArgumentParser(description="DiAD")
@@ -159,11 +173,9 @@ with torch.no_grad():
         # 1. 收集所有层的注意力矩阵
         all_layer_attentions = get_all_layer_attentions(dino_model, img_for_dino.cuda())
         
-        # 2. 计算 Attention Rollout (优化：只使用最后 4 层，降低 discard_ratio)
+        # 2. 计算 Attention Rollout (使用全层 0.8 版本)
         if all_layer_attentions:
-            # 只取最后 4 层 [8, 9, 10, 11]
-            last_4_layers = all_layer_attentions[-4:]
-            attentions_rollout = attention_rollout(last_4_layers, discard_ratio=0.1, head_fusion='mean')
+            attentions_rollout = attention_rollout(all_layer_attentions, discard_ratio=0.8, head_fusion='mean')
         else:
             # Fallback: 如果 Hook 没拿到数据，退回到原来的最后一层均值方案
             print("Warning: Hook failed to capture attentions, falling back to last layer mean.")
